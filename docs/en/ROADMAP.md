@@ -67,7 +67,7 @@
 
 ## V5: Agent integrations
 
-- generated `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and Cursor rules
+- ~~generated `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and Cursor rules~~ — `interpose agents install`
 - Codex CLI session adapter
 - Claude Code session adapter
 - Cursor launcher

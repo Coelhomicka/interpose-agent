@@ -30,6 +30,16 @@ Entries that change a security guarantee are marked **[security]**.
   to the right base URL for the current folder, in development and with the service.
 - Dashboard login links are bound to the folder they were issued for, so one dashboard can manage
   several projects at once.
+- `interpose agents install|remove|print`: one set of instructions rendered for every agent —
+  `AGENTS.md` (Codex, Cursor, Devin, Antigravity, Copilot and others), `CLAUDE.md` and a Claude Code
+  skill, `GEMINI.md`, and a Cursor rule — as marked blocks that never touch the rest of a file.
+  `interpose setup` installs the user-level ones for the agents it finds.
+- `interpose run` sets `INTERPOSE_PROXY` in the agent's environment.
+- **[security]** `interpose run` refuses to start an agent from an administrator shell unless
+  `--allow-elevated` is given, and warns when the vault is in development mode.
+- **[security]** `interpose-exec` passes secret-bearing arguments to curl on standard input instead
+  of argv, runs only `curl` when a reference is present, and no longer returns the resolved command
+  in its result.
 
 ### Security
 

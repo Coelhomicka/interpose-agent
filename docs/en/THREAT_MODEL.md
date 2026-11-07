@@ -25,15 +25,16 @@ The preferred model is reference-only execution: untrusted processes receive `se
 | Cross-project secret access | Protected in managed sessions | The active project comes from the operator's registry, not from workspace files. Project ciphertexts are bound to their scope by AES-GCM associated data. |
 | Partial reflection by an upstream | Not Protected | Some APIs echo a masked key in errors (`sk_test_****abcd`). Exact-match redaction does not catch partial echoes, so a few characters can reach the agent. |
 | Browser-driven access to loopback listeners | Protected | The broker and API reject requests with an `Origin` header or a cross-site `Sec-Fetch-Site`, and reject non-loopback `Host` headers, blocking CSRF and DNS rebinding from web pages. |
-| `/proc` or process inspection | Partially Protected | Reference-only sessions contain no secret arguments. `interpose-exec` may expose resolved arguments. |
-| Process memory inspection | Not Protected Yet | Same-user isolation between the broker and agent is not enforced. |
+| `/proc` or process inspection | Protected | Reference-only sessions contain no secret arguments, and `interpose-exec` hands secrets to curl on standard input (`--config -`), never in argv. |
+| Process memory inspection | Protected on Windows with the service; Not Protected in development mode | The service process belongs to `NT SERVICE\Interpose`; Windows refuses to let the user's processes open it, even for limited queries. In development mode the broker runs as the user and its memory is readable by the user's processes. |
+| Elevated agent | Not Protected | An administrator can read anything. `interpose run` refuses to start an agent from an elevated shell unless `--allow-elevated` is passed. |
 | Direct network exfiltration | Not Protected Yet | The explicit local transport does not prevent an agent from opening direct sockets. OS egress enforcement remains mandatory. |
 | HTTP broker exfiltration | Partially Protected | Destination, method, and scheme policies are enforced before resolution. DNS rebinding and path-level controls remain. |
 | HTTPS traffic | Not Protected Yet | `CONNECT` is rejected because an opaque TLS tunnel cannot substitute references safely. |
 | HTTP redirects | Protected | Automatic upstream redirects are disabled. |
 | URL-encoded references | Protected for query/form HTTP | The broker decodes references, evaluates policy, resolves, and safely re-encodes values. |
 | Fingerprint guessing | Protected | Fingerprints are HMAC-SHA256 under a key derived from the master key, so a listed fingerprint is not an offline oracle for low-entropy secrets. Legacy SHA-256 fingerprints are rewritten on open. |
-| `interpose-exec` destination bypass | Partially Protected | Requires `allow_exec: true` per secret and an explicit `EXEC` method for non-curl commands; counts schemeless curl hosts and refuses rerouting curl options. Argv inference remains a heuristic. |
+| `interpose-exec` destination bypass | Partially Protected | Requires `allow_exec: true` per secret and only runs `curl` when a reference is present; counts schemeless curl hosts and refuses rerouting curl options. Argv inference remains a heuristic, and curl itself holds the plaintext while it runs. |
 | Logs and audit | Protected for known resolved values | Resolved values and resolved URLs are redacted; audit records contain references and metadata only. |
 | Audit attribution | Not Protected Yet | The broker has no client authentication on loopback, so it cannot verify which process sent a request. Records are reliable about what happened, not about who did it. |
 | Tracebacks | Partially Protected | Broker errors are redacted. Untrusted application tracebacks contain references only in managed sessions. |
@@ -61,10 +62,9 @@ The current implementation guarantees that:
 
 The current implementation does not guarantee protection against:
 
-1. a malicious process running as the same operating-system user as the broker in development mode, or one that uses the service's control token to change policies through the dashboard;
-2. a process running elevated (administrator or SYSTEM);
+1. a malicious process running as the same operating-system user as the broker in development mode — including reading the broker's memory — or one that uses the service's control token to change policies through the dashboard;
+2. a process running elevated (administrator or SYSTEM); `interpose run` refuses to start one by default;
 3. direct network access that bypasses the local transport;
-4. memory scraping of the trusted broker;
-5. covert channels, DNS, QUIC, or unmanaged transports;
-6. secrets delivered through the limited `interpose-exec` compatibility mode;
-7. SDKs that require plaintext locally to validate, derive, encrypt, or sign.
+4. covert channels, DNS, QUIC, or unmanaged transports;
+5. what `curl` does with a secret delivered through the limited `interpose-exec` mode while it runs;
+6. SDKs that require plaintext locally to validate, derive, encrypt, or sign.

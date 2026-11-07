@@ -25,15 +25,16 @@ O modelo preferido é a execução só com referências: processos não confiáv
 | Acesso a segredos de outro projeto | Protegido em sessões gerenciadas | O projeto ativo vem do registro do operador, não de arquivos do workspace. Os textos cifrados de projeto ficam vinculados ao escopo pelos dados associados do AES-GCM. |
 | Reflexo parcial pelo destino | Não protegido | Algumas APIs ecoam a chave mascarada em erros (`sk_test_****abcd`). O mascaramento por valor exato não pega ecos parciais, então alguns caracteres podem chegar ao agente. |
 | Acesso a listeners do loopback via navegador | Protegido | O broker e a API rejeitam requisições com header `Origin` ou `Sec-Fetch-Site` cross-site e rejeitam headers `Host` fora do loopback, bloqueando CSRF e DNS rebinding vindos de páginas web. |
-| `/proc` ou inspeção de processos | Parcialmente protegido | Sessões só com referências não têm argumentos secretos. O `interpose-exec` pode expor argumentos resolvidos. |
-| Inspeção da memória de processos | Ainda não protegido | O isolamento entre broker e agente do mesmo usuário não é aplicado. |
+| `/proc` ou inspeção de processos | Protegido | Sessões só com referências não têm argumentos secretos, e o `interpose-exec` entrega os segredos ao curl pela entrada padrão (`--config -`), nunca nos argumentos. |
+| Inspeção da memória de processos | Protegido no Windows com o serviço; não protegido no modo de desenvolvimento | O processo do serviço pertence a `NT SERVICE\Interpose`; o Windows não deixa os processos do usuário abri-lo, nem para consultas limitadas. No modo de desenvolvimento o broker roda como o usuário e a memória dele é legível pelos processos do usuário. |
+| Agente elevado | Não protegido | Um administrador consegue ler tudo. O `interpose run` se recusa a iniciar um agente a partir de um terminal elevado, a menos que `--allow-elevated` seja passado. |
 | Exfiltração direta pela rede | Ainda não protegido | O transporte local explícito não impede um agente de abrir sockets diretos. O controle de saída no sistema operacional continua obrigatório. |
 | Exfiltração pelo broker HTTP | Parcialmente protegido | Políticas de destino, método e esquema são aplicadas antes da resolução. Faltam controles de DNS rebinding e de caminho. |
 | Tráfego HTTPS | Ainda não protegido | `CONNECT` é rejeitado porque um túnel TLS opaco não permite substituir referências com segurança. |
 | Redirecionamentos HTTP | Protegido | Redirecionamentos automáticos do destino estão desativados. |
 | Referências URL-encoded | Protegido em query/formulário HTTP | O broker decodifica as referências, avalia a política, resolve e recodifica os valores com segurança. |
 | Adivinhação por fingerprint | Protegido | Os fingerprints são HMAC-SHA256 com uma chave derivada da chave mestra, então um fingerprint listado não serve de oráculo offline para segredos de baixa entropia. Fingerprints SHA-256 antigos são reescritos ao abrir. |
-| Desvio de destino no `interpose-exec` | Parcialmente protegido | Exige `allow_exec: true` por segredo e o método `EXEC` explícito para comandos que não são curl; conta hosts do curl sem esquema e recusa opções do curl que redirecionam o tráfego. A inferência pelos argumentos continua sendo uma heurística. |
+| Desvio de destino no `interpose-exec` | Parcialmente protegido | Exige `allow_exec: true` por segredo e só executa o `curl` quando há uma referência; conta hosts do curl sem esquema e recusa opções do curl que redirecionam o tráfego. A inferência pelos argumentos continua sendo uma heurística, e o próprio curl tem o valor em texto puro enquanto roda. |
 | Logs e auditoria | Protegido para valores resolvidos conhecidos | Valores e URLs resolvidos são mascarados; os registros de auditoria contêm só referências e metadados. |
 | Atribuição na auditoria | Ainda não protegido | O broker não autentica clientes no loopback, então não consegue verificar qual processo enviou a requisição. Os registros são confiáveis sobre o que aconteceu, não sobre quem fez. |
 | Stack traces | Parcialmente protegido | Os erros do broker são mascarados. Stack traces de aplicações não confiáveis contêm só referências em sessões gerenciadas. |
@@ -61,10 +62,9 @@ A implementação atual garante que:
 
 A implementação atual não garante proteção contra:
 
-1. um processo malicioso rodando com o mesmo usuário do sistema operacional que o broker no modo de desenvolvimento, ou um que use o token de controle do serviço para alterar políticas pelo painel;
-2. um processo rodando elevado (administrador ou SYSTEM);
+1. um processo malicioso rodando com o mesmo usuário do sistema operacional que o broker no modo de desenvolvimento — inclusive lendo a memória do broker — ou um que use o token de controle do serviço para alterar políticas pelo painel;
+2. um processo rodando elevado (administrador ou SYSTEM); o `interpose run` se recusa a iniciar um por padrão;
 3. acesso direto à rede que contorne o transporte local;
-4. leitura da memória do broker confiável;
-5. canais encobertos, DNS, QUIC ou transportes não gerenciados;
-6. segredos entregues pelo modo de compatibilidade limitado `interpose-exec`;
-7. SDKs que exigem o valor em texto puro localmente para validar, derivar, cifrar ou assinar.
+4. canais encobertos, DNS, QUIC ou transportes não gerenciados;
+5. o que o `curl` faz com um segredo entregue pelo modo limitado `interpose-exec` enquanto roda;
+6. SDKs que exigem o valor em texto puro localmente para validar, derivar, cifrar ou assinar.

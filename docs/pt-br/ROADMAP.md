@@ -67,7 +67,7 @@
 
 ## V5: Integrações com agentes
 
-- geração de `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` e regras do Cursor
+- ~~geração de `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` e regras do Cursor~~ — `interpose agents install`
 - adaptador de sessão para o Codex CLI
 - adaptador de sessão para o Claude Code
 - launcher para o Cursor

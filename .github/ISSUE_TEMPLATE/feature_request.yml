@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Check [docs/ROADMAP.md](https://github.com/Coelhomicka/interpose/blob/main/docs/ROADMAP.md)
+        Check [docs/en/ROADMAP.md](https://github.com/Coelhomicka/interpose/blob/main/docs/en/ROADMAP.md)
         first — the item may already be planned, in which case comment there instead.
 
   - type: textarea
@@ -45,7 +45,7 @@ body:
       label: Does this change the trust boundary?
       description: >-
         Resolution ordering, what a child process receives, what an endpoint returns, or how policy
-        is sourced. See docs/ARCHITECTURE.md if you are unsure.
+        is sourced. See docs/en/ARCHITECTURE.md if you are unsure.
       options:
         - "No"
         - "Yes"

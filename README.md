@@ -51,6 +51,37 @@ flowchart LR
 The order matters: **policy is evaluated before the secret is resolved.** A request to a destination
 the policy does not allow is denied while the value is still encrypted at rest.
 
+### Where each piece runs
+
+```mermaid
+flowchart LR
+    subgraph USER["Your account (untrusted)"]
+        AG["Agent + generated code<br/>holds secret:// refs"]
+        CLI["interpose CLI<br/>setup · up · run"]
+        BRW["Browser<br/>dashboard"]
+    end
+    subgraph SVC["Interpose service: NT SERVICE\Interpose"]
+        PX["Broker :9876"]
+        DSH["Dashboard :18888"]
+    end
+    VAULT[("Vault + master key<br/>ProgramData\Interpose\vault")]
+    UP["Upstream APIs"]
+
+    CLI -->|"launches with refs only"| AG
+    AG -->|"secret:// in an allowed slot"| PX
+    PX -->|"policy, then decrypt"| VAULT
+    PX -->|"real key"| UP
+    BRW -->|"write-only values, policies"| DSH
+    DSH --> VAULT
+    AG -.->|"✗ access denied by the OS"| VAULT
+```
+
+On Windows, `interpose setup` installs the broker and dashboard as a service under its own OS
+identity, so the vault is out of reach of anything running as you — including the agent. Without it
+(development mode, and on Linux and macOS today) the same components run as you from
+`interpose up`. [`docs/en/ARCHITECTURE.md`](docs/en/ARCHITECTURE.md) has the full picture, the install and
+login flows, and the request lifecycle.
+
 ## Install
 
 ```bash
@@ -103,7 +134,9 @@ interpose up
 ```
 
 This starts the broker and a local dashboard in one process and opens the dashboard in your
-browser, in the style of the .NET Aspire dashboard. From there you can:
+browser, in the style of the .NET Aspire dashboard. With the [service](#protect-the-vault-install-the-service-windows)
+installed, `interpose up` starts nothing: it checks that the service owns both ports, asks it for a
+single-use login link bound to the current folder, and opens it. From there you can:
 
 - **register the folder as a project** — its secrets and policies apply only when the runtime runs
   there;
@@ -189,10 +222,14 @@ environment:
   OPENAI_API_KEY: secret://openai/prod
 
 public_environment:
-  OPENAI_BASE_URL: http://127.0.0.1:9876/proxy/api.openai.com/v1
+  OPENAI_BASE_URL: ${INTERPOSE_PROXY}/api.openai.com/v1
 ```
 
-**4. Start the broker** in a trusted terminal:
+`${INTERPOSE_PROXY}` expands to the broker's address for the current folder's project, for example
+`http://127.0.0.1:9876/p/my-app/proxy`, so the same profile works in development and against the
+service. A literal `http://127.0.0.1:9876/proxy/...` URL also works; it uses the broker's own scope.
+
+**4. Start the broker** in a trusted terminal — skip this with the service installed:
 
 ```bash
 interpose proxy --host 127.0.0.1 --port 9876
@@ -268,16 +305,36 @@ reference with a plaintext value, a `****` placeholder, or an invented token.
 
 ## Telling the agent the rules
 
-[`docs/AGENT_CREDENTIALS.md`](docs/AGENT_CREDENTIALS.md) is a drop-in contract for the agent's own
-instruction file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, Cursor rules). It states the expected
-behavior: use references normally, never resolve them, never substitute a fake value, never rewrite
-`/proxy/{allowed-host}` to dodge policy, and report a `PolicyViolation` instead of working around it.
+Agents work better when they know how Interpose works: call `$INTERPOSE_PROXY/<host>/<path>` with
+the reference in the `Authorization` header, read `[REDACTED]` and `403 PolicyViolation` correctly,
+and ask you to add a missing credential in the dashboard instead of asking for the key.
+
+```bash
+interpose agents install            # in a project: AGENTS.md, CLAUDE.md, GEMINI.md, Cursor rule
+interpose agents install --global   # user level: Claude Code skill, ~/.codex/AGENTS.md, ~/.gemini/GEMINI.md
+interpose agents print              # the same text, to paste into a settings screen
+```
+
+`AGENTS.md` is read by Codex, Cursor, Devin, Antigravity, GitHub Copilot, Jules, Amp, Windsurf and
+others; `CLAUDE.md` and the skill cover Claude Code; `GEMINI.md` covers Gemini CLI and Antigravity.
+For tools configured only through a settings screen — Devin's knowledge, Cursor's user rules —
+paste the output of `interpose agents print`. Shared files get a marked block that reinstalling
+replaces and `interpose agents remove` deletes; the rest of the file is never touched.
+`interpose setup` installs the user-level files for the agents it finds.
+
+`interpose run` also sets `INTERPOSE_PROXY` in the agent's environment, already pointing at the
+current project, so the instructions work unchanged in every project.
+
+The instructions are advisory: an agent that ignores them gains nothing, because enforcement is the
+broker's and the OS's. [`docs/en/AGENT_CREDENTIALS.md`](docs/en/AGENT_CREDENTIALS.md) states the same
+contract as a reference document.
 
 ## Transport support
 
 | Transport | Status |
 | --- | --- |
 | Explicit local transport `http://127.0.0.1:9876/proxy/{host}/{path}` | Implemented — recommended |
+| Per-project transport `http://127.0.0.1:9876/p/{project}/proxy/{host}/{path}` | Implemented — what `${INTERPOSE_PROXY}` produces |
 | External TLS origination (broker opens its own HTTPS connection) | Implemented |
 | Scheme-aware policy (insecure external HTTP denied by default) | Implemented |
 | Query, form, JSON body, and header substitution | Implemented |
@@ -291,13 +348,16 @@ enforce policy on it, and pretending otherwise would be a false guarantee.
 
 ## Project status
 
-**Alpha.** The reference model, policy engine, broker, and audit trail work and are covered by
-tests. The isolation story is not finished, and that gap is the difference between *policy
-enforcement* and *adversarial containment*.
+**Alpha.** The reference model, policy engine, broker, dashboard, and audit trail work and are
+covered by tests. On Windows the vault now sits behind an OS boundary (the service); egress control
+and a user-presence check on the dashboard are not done yet, and they are the difference between
+*policy enforcement* and *adversarial containment*.
 
 Guaranteed today:
 
 - no API or CLI operation returns a stored secret value;
+- with the Windows service installed, the vault and master key are unreadable by your account and
+  the service runs code your account cannot modify;
 - policy is evaluated before resolution;
 - managed child environments contain references, not values;
 - storage uses AES-GCM authenticated encryption;
@@ -328,10 +388,10 @@ name — in practice `unknown` — regardless of what you passed.
 Audit records are reliable about *what happened*: the reference used, the destination, the policy
 decision, and the upstream status. They are not reliable about *who did it* when more than one
 managed session shares a broker. Verified per-agent attribution needs the authenticated daemon on
-the [roadmap](docs/ROADMAP.md); anything achievable before that is self-reported by an untrusted
+the [roadmap](docs/en/ROADMAP.md); anything achievable before that is self-reported by an untrusted
 process and therefore forgeable.
 
-[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) has the full per-threat breakdown. It is written to
+[`docs/en/THREAT_MODEL.md`](docs/en/THREAT_MODEL.md) has the full per-threat breakdown. It is written to
 be honest about what does not work, not to market what does.
 
 ## Platform support
@@ -339,27 +399,28 @@ be honest about what does not work, not to market what does.
 | | Core (vault, policy, broker, CLI, audit) | AppContainer isolation |
 | --- | --- | --- |
 | Windows | Supported, plus the protected OS service (`interpose setup`) | Supported (elevated shell required) |
-| Linux | Supported | Not implemented — see [roadmap](docs/ROADMAP.md) |
-| macOS | Supported | Not implemented — see [roadmap](docs/ROADMAP.md) |
+| Linux | Supported | Not implemented — see [roadmap](docs/en/ROADMAP.md) |
+| macOS | Supported | Not implemented — see [roadmap](docs/en/ROADMAP.md) |
 
 ## Limited executor
 
-`interpose-exec` substitutes secrets directly into subprocess arguments:
+`interpose-exec` runs `curl` with the real secret:
 
 ```bash
 interpose-exec --agent codex curl "https://api.github.com/user" \
   -H "Authorization: Bearer secret://github/prod"
 ```
 
-The subprocess therefore **possesses** the plaintext — and the resolved arguments are visible in the
-process list. This mode exists for compatibility with tools the broker cannot mediate; it is not
-suitable for arbitrary or agent-generated executables. Prefer the broker, where the secret never
-enters the child process.
+The arguments that carry a reference are passed to `curl` on standard input as curl config
+(`--config -`), so the resolved value never appears in the process list. `curl` itself still
+**possesses** the plaintext while it runs. Prefer the broker, where the secret never enters a child
+process at all.
 
 Because of that, it is **off unless the policy opts in** with `allow_exec: true`. Even then:
 
-- running anything other than `curl` is method `EXEC`, which must be listed in `methods`
-  explicitly — an empty method list does not imply it;
+- only `curl` runs with secret references; any other program is refused;
+- a value containing a backslash or a control character is refused rather than sent altered, since
+  curl's config syntax does not round-trip it reliably;
 - schemeless `curl` targets such as `evil.example/path` count as destinations, so they cannot ride
   along next to an allowed `https://` URL;
 - `curl` options that reroute traffic or read arguments from elsewhere (`-K/--config`, `--next`,
@@ -388,15 +449,18 @@ is not loopback (DNS rebinding), and reject requests carrying a browser `Origin`
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — components, request lifecycle, trust boundary
-- [Threat Model](docs/THREAT_MODEL.md) — per-threat status, guarantees and non-guarantees
-- [Agent Credential Contract](docs/AGENT_CREDENTIALS.md) — the rules to give the agent
-- [Roadmap](docs/ROADMAP.md) — V2 enforced isolation through V5 agent integrations
+- [Architecture](docs/en/ARCHITECTURE.md) — components, request lifecycle, trust boundary
+- [Threat Model](docs/en/THREAT_MODEL.md) — per-threat status, guarantees and non-guarantees
+- [Agent Credential Contract](docs/en/AGENT_CREDENTIALS.md) — the rules to give the agent
+- [Roadmap](docs/en/ROADMAP.md) — V2 enforced isolation through V5 agent integrations
+
+Also available in Portuguese (Brazil) — também disponível em português: [docs/pt-br](docs/README.md).
 
 ## Contributing
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The work that moves the project
-furthest right now is listed there, starting with running the broker under a separate OS identity.
+furthest right now is listed there, starting with egress enforcement and the service on Linux and
+macOS.
 
 To report a security vulnerability, follow [SECURITY.md](SECURITY.md) rather than opening a public
 issue.

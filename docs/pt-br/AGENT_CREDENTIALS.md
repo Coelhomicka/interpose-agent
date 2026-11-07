@@ -63,6 +63,8 @@ assert os.environ["API_KEY"] == "secret://apichave/teste"
 
 ## Adaptadores para IDEs
 
+O `interpose agents install` escreve uma versão pronta destas regras, com exemplos de uso, em `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` e numa regra do Cursor; o `interpose agents print` imprime o texto para ferramentas configuradas por uma tela de ajustes.
+
 Mantenha este contrato como fonte da verdade e repita o comportamento exigido no arquivo de instruções suportado por cada agente, como `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` e as regras de workspace do Cursor.
 
 Arquivos de instrução são apenas orientação. A segurança de fato vem do launcher só com referências, dos brokers confiáveis, do motor de políticas, dos controles de acesso do sistema operacional e do isolamento de rede.

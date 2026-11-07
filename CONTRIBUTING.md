@@ -8,7 +8,7 @@ By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Before you start
 
-Read [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Read [`docs/en/THREAT_MODEL.md`](docs/en/THREAT_MODEL.md) and [`docs/en/ARCHITECTURE.md`](docs/en/ARCHITECTURE.md).
 Most review friction comes from changes that quietly move the trust boundary. Knowing where it sits
 saves a round trip.
 
@@ -46,16 +46,18 @@ expected, not a failure.
 
 Ranked by how much each one unblocks:
 
-1. **Broker under a separate OS identity.** This is the project's binding limitation. Today a
-   same-user process reads the vault and master key directly, which means the runtime enforces
-   policy but does not contain an adversary. Needs: a daemon under its own account, an authenticated
-   Named Pipe on Windows and Unix socket elsewhere, and filesystem ACLs on the vault and key.
+1. **The service on Linux and macOS, and user presence on Windows.** On Windows the broker already
+   runs as `NT SERVICE\Interpose` with the vault behind ACLs (`src/interpose/service/`). Linux
+   (systemd `DynamicUser=`) and macOS (a launchd daemon with its own user) need the same install and
+   service-manager glue around the unchanged `service/host.py`. On every platform, opening a
+   dashboard session should require user presence (Windows Hello, Touch ID, polkit), because the
+   control token is readable by the user.
 2. **Linux and macOS isolation backends.** The `IsolationBackend` protocol in
    `src/interpose/session/isolation/base.py` is the extension point; the Windows AppContainer
    backend is the reference implementation. Linux wants namespaces plus nftables egress rules;
    macOS wants sandbox profiles and a Network Extension.
-3. **Egress enforcement.** Policy is meaningless while the agent can open its own socket. This is
-   the other half of item 1.
+3. **Egress enforcement.** Policy is meaningless while the agent can open its own socket. With the
+   vault protected, this is now the largest remaining gap.
 4. **External secret stores.** `SecretStore` in `src/interpose/secrets/base.py` is a small
    protocol. Vault, Azure Key Vault, AWS Secrets Manager, GCP Secret Manager, Keychain, and Secret
    Service all fit behind it.
@@ -64,7 +66,7 @@ Ranked by how much each one unblocks:
 6. **Protocol brokers.** Database authentication, SigV4 signing, SSH, and mTLS each need an
    operation broker so that key material never leaves the trusted zone.
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full picture.
+See [`docs/en/ROADMAP.md`](docs/en/ROADMAP.md) for the full picture.
 
 ## Pull requests
 

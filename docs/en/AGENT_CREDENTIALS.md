@@ -59,6 +59,8 @@ assert os.environ["API_KEY"] == "secret://apichave/teste"
 
 ## IDE adapters
 
+`interpose agents install` writes a ready-to-use version of these rules, with how-to examples, into `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` and a Cursor rule; `interpose agents print` prints it for tools configured in a settings screen.
+
 Keep this contract as the source of truth and repeat its required behavior in the instruction surface supported by each agent, such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and Cursor workspace rules.
 
 Instruction files are advisory. Security enforcement comes from the reference-only launcher, trusted brokers, policy engine, OS access controls, and network isolation.

@@ -41,7 +41,7 @@ advisory and changelog unless you ask otherwise.
 
 ## Scope
 
-Before reporting, please read [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). It documents, per
+Before reporting, please read [`docs/en/THREAT_MODEL.md`](docs/en/THREAT_MODEL.md). It documents, per
 threat, what is protected and what is not. A report describing a limitation already listed as
 *Not Protected Yet* is not a vulnerability — it is a known gap with a roadmap entry.
 
@@ -66,7 +66,7 @@ threat, what is protected and what is not. A report describing a limitation alre
 These are documented non-guarantees, not vulnerabilities:
 
 - A process running as the **same OS user** reading the vault file, master key, or broker memory.
-  Enforced isolation is V2 on the [roadmap](docs/ROADMAP.md).
+  Enforced isolation is V2 on the [roadmap](docs/en/ROADMAP.md).
 - An agent opening a **direct network socket**, bypassing the broker entirely. OS-level egress
   control is required and not yet implemented.
 - The **unauthenticated administrative API** when it is exposed beyond loopback. It is documented as
