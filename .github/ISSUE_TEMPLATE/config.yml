@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/Coelhomicka/interpose/security/advisories/new
+    url: https://github.com/Coelhomicka/interpose-agent/security/advisories/new
     about: Never report a vulnerability in a public issue. Use a private advisory.
   - name: Known limitations and non-guarantees
-    url: https://github.com/Coelhomicka/interpose/blob/main/docs/en/THREAT_MODEL.md
+    url: https://github.com/Coelhomicka/interpose-agent/blob/main/docs/en/THREAT_MODEL.md
     about: Check whether the behavior you found is already a documented gap.
   - name: Questions and ideas
-    url: https://github.com/Coelhomicka/interpose/discussions
+    url: https://github.com/Coelhomicka/interpose-agent/discussions
     about: Ask about usage, deployment, or design here.

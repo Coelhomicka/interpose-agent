@@ -17,7 +17,7 @@ saves a round trip.
 ## Development setup
 
 ```bash
-git clone https://github.com/Coelhomicka/interpose.git
+git clone https://github.com/Coelhomicka/interpose-agent.git
 cd interpose
 
 python -m venv .venv

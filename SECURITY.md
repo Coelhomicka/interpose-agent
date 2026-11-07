@@ -14,7 +14,7 @@ Interpose is alpha software. Only the latest commit on `main` receives security 
 **Do not open a public issue for a vulnerability.**
 
 Report privately through
-[GitHub Security Advisories](https://github.com/Coelhomicka/interpose/security/advisories/new),
+[GitHub Security Advisories](https://github.com/Coelhomicka/interpose-agent/security/advisories/new),
 or by email to **mcmickael9@gmail.com** with `[interpose security]` in the subject.
 
 Please include:

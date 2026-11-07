@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         **Do not report a security vulnerability here.** Follow
-        [SECURITY.md](https://github.com/Coelhomicka/interpose/blob/main/SECURITY.md) instead.
+        [SECURITY.md](https://github.com/Coelhomicka/interpose-agent/blob/main/SECURITY.md) instead.
 
         **Never paste a real credential.** Use a throwaway value in every snippet below.
 
