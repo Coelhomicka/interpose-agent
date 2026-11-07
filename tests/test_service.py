@@ -4,6 +4,7 @@ without administrator rights."""
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -251,7 +252,8 @@ def test_service_mode_is_off_when_interpose_home_is_set(tmp_path, monkeypatch):
     monkeypatch.setenv("INTERPOSE_HOME", str(tmp_path / "dev"))
     assert service_installed(layout) is False
     monkeypatch.delenv("INTERPOSE_HOME")
-    assert service_installed(layout) is True
+    # The service exists only on Windows; elsewhere development mode is the only mode.
+    assert service_installed(layout) is (os.name == "nt")
 
     withdraw_endpoint(layout)
     assert service_installed(layout) is False

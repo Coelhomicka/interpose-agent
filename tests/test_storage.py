@@ -42,6 +42,7 @@ def test_legacy_sha256_fingerprints_are_migrated(runtime_config):
 
 def test_generated_master_key_is_private(tmp_path, monkeypatch):
     import os
+    import re
     import subprocess
     import sys
 
@@ -54,7 +55,9 @@ def test_generated_master_key_is_private(tmp_path, monkeypatch):
 
     if sys.platform == "win32":
         acl = subprocess.run(["icacls", str(key_file)], capture_output=True, text=True, check=True).stdout
-        entries = [line for line in acl.splitlines()[:-2] if line.strip()]
+        # Count access entries ("ACCOUNT:(rights)"), not lines: icacls' trailing summary
+        # line and spacing vary with the Windows language and version.
+        entries = re.findall(r"\S+:\((?:[A-Z]{1,2},?)+\)", acl)
         assert len(entries) == 1, acl
         assert "(I)" not in acl
     else:
