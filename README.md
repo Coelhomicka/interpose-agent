@@ -62,6 +62,30 @@ python -m pip install -e ".[dev]"
 Runtime state lives in `~/.interpose` (`%USERPROFILE%\.interpose` on Windows). Keep the
 administrative shell, the database, and the master key outside the agent's workspace.
 
+### Protect the vault: install the service (Windows)
+
+Out of the box the broker runs as you, so any program running as you, an agent included, can read
+the vault and its key from disk. Install the service once to close that:
+
+```powershell
+interpose setup        # one administrator (UAC) prompt; never again after this
+```
+
+`setup` copies a private Python runtime and Interpose into `%ProgramFiles%\Interpose`, registers
+the `Interpose` service under the virtual account `NT SERVICE\Interpose` (no password, no login),
+and moves your vault into `%ProgramData%\Interpose\vault`, which only that account, SYSTEM, and
+elevated administrators can open. The copy in your profile is destroyed. From then on
+`interpose up` just opens the dashboard of the running service, and `interpose run` points
+sessions at it. Nothing else changes for the agent.
+
+Run `setup` yourself, not from an agent session: until the service exists, the code it installs
+from is still writable by that agent. Never run an agent elevated; an administrator can read
+anything. `interpose service status|start|stop|uninstall` manage the service; `uninstall` keeps the
+vault unless you pass `--purge`.
+
+In `session.yaml`, write broker URLs as `${INTERPOSE_PROXY}/<host>`. It expands to the broker
+address for the current project, with or without the service.
+
 ## Quickstart: the dashboard
 
 From your project folder:
@@ -282,9 +306,12 @@ Guaranteed today:
 
 **Not** guaranteed yet:
 
-- **isolation from another process running as the same OS user** — a same-user process can read the
-  vault file and the master key. Until the broker runs under a separate OS identity, this is the
-  binding limitation;
+- **isolation from another process running as the same OS user without the service**: in
+  development mode a same-user process can read the vault file and the master key. `interpose setup`
+  moves both under a separate OS identity (Windows only for now). Even with the service, the
+  dashboard's control token is readable by the user, so a same-user process can still open a
+  dashboard session and change policies (never read values); requiring Windows Hello for that is
+  the next step;
 - **denial of direct network egress** — nothing stops an agent from opening its own socket and
   bypassing the broker. OS-level egress control is mandatory for a real threat model;
 - protection against process-memory, DNS, or covert-channel attacks;
@@ -311,7 +338,7 @@ be honest about what does not work, not to market what does.
 
 | | Core (vault, policy, broker, CLI, audit) | AppContainer isolation |
 | --- | --- | --- |
-| Windows | Supported | Supported (elevated shell required) |
+| Windows | Supported, plus the protected OS service (`interpose setup`) | Supported (elevated shell required) |
 | Linux | Supported | Not implemented — see [roadmap](docs/ROADMAP.md) |
 | macOS | Supported | Not implemented — see [roadmap](docs/ROADMAP.md) |
 

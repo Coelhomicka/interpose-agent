@@ -20,6 +20,16 @@ Entries that change a security guarantee are marked **[security]**.
   resolves to the project's value first and the global value otherwise; policies follow the same
   chain. Existing vaults migrate in place, with every record becoming global.
 - `interpose proxy` and `interpose run` use the registered project containing the current folder.
+- **[security]** `interpose setup` (Windows): installs the broker as the `Interpose` service under
+  the virtual account `NT SERVICE\Interpose`, with a private runtime in `%ProgramFiles%` and the
+  vault in an ACL-protected `%ProgramData%` folder, and moves the development vault there. The
+  service-control glue is plain ctypes, so no native dependency is added. `interpose service
+  status|start|stop|uninstall` manage it; `interpose up` and `interpose run` use it when installed.
+- Broker URLs of the form `/p/<project>/proxy/<host>/...` select a project's scope per request, so
+  one broker serves every project. `${INTERPOSE_PROXY}` in a profile's `public_environment` expands
+  to the right base URL for the current folder, in development and with the service.
+- Dashboard login links are bound to the folder they were issued for, so one dashboard can manage
+  several projects at once.
 
 ### Security
 
@@ -56,6 +66,7 @@ Entries that change a security guarantee are marked **[security]**.
 
 - The broker no longer forwards the upstream `Content-Encoding` header after `httpx` has already
   decoded the body, which made clients fail to decompress a plain payload.
+- The broker no longer forwards the upstream `Server` and `Date` headers next to its own.
 
 ### Added
 

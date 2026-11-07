@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -12,11 +13,13 @@ from fastapi.responses import Response
 
 from ..container import RuntimeContainer, create_container
 from ..core.local_guard import browser_request_rejection, is_loopback_authority
-from ..core.policies import RequestLocation
+from ..core.policies import PolicyEngine, RequestLocation
 from ..core.references import SecretReference, collect_secret_references
+from ..core.scopes import ScopeContext
 from ..core.substitution import SecretSubstitutionEngine
 from ..models import DestinationContext
 from ..secrets.base import SecretNotFound
+from ..secrets.encrypted_local import ScopedSecretStore
 
 _HOP_BY_HOP_HEADERS = {
     "connection",
@@ -35,7 +38,14 @@ _HOP_BY_HOP_HEADERS = {
 
 # httpx decodes the upstream body, so the encoding header no longer describes what
 # the client receives; forwarding it makes the client try to decompress plain bytes.
-_RESPONSE_ONLY_DROPPED_HEADERS = {"content-encoding"}
+_RESPONSE_ONLY_DROPPED_HEADERS = {"content-encoding", "server", "date"}
+# ``server`` and ``date`` are re-added by the broker's own HTTP server; forwarding
+# the upstream copies as well produced duplicates and fingerprinted the upstream.
+
+# ``/p/<project-id>/proxy/...`` resolves secrets and policies in that project's
+# scope, then global. Plain ``/proxy/...`` uses the broker's own scope. A long-lived
+# broker (the OS service) serves every project, so the project travels in the URL.
+_PROJECT_PREFIX_RE = re.compile(r"^p/([a-z0-9][a-z0-9-]{0,62})/(proxy/.*)$", re.DOTALL)
 
 def _filtered_headers(headers: dict[str, str]) -> dict[str, str]:
     return {
@@ -187,6 +197,17 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
         if rejection is not None:
             return Response(content=f"Forbidden: {rejection}", status_code=403)
 
+        policy_engine = runtime.policy_engine
+        secret_store = runtime.secret_store
+        project_match = _PROJECT_PREFIX_RE.match(path)
+        if project_match:
+            project_id, path = project_match.group(1), project_match.group(2)
+            if runtime.project_registry.get(project_id) is None:
+                return Response(content=f"unknown project: {project_id}", status_code=404)
+            project_context = ScopeContext(project_id=project_id)
+            policy_engine = PolicyEngine(runtime.policy_repository, project_context)
+            secret_store = ScopedSecretStore(runtime.secret_store.backend, project_context)
+
         try:
             target = parse_local_transport_target(path, request.url.query)
             if target is not None and not is_loopback_authority(request.headers.get("host", "")):
@@ -253,7 +274,7 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
         )
 
         for reference, location in located:
-            decision = runtime.policy_engine.evaluate(reference, destination, location=location)
+            decision = policy_engine.evaluate(reference, destination, location=location)
             if not decision.allowed:
                 runtime.audit_logger.record(
                     session="proxy",
@@ -268,7 +289,7 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
                 )
                 return Response(content=f"PolicyViolation: {decision.reason}", status_code=403)
 
-        substitution = SecretSubstitutionEngine(runtime.secret_store.resolve)
+        substitution = SecretSubstitutionEngine(secret_store.resolve)
 
         try:
             resolved_headers = outbound_headers
