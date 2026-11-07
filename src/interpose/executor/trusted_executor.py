@@ -14,6 +14,7 @@ from ..core.references import collect_secret_references
 from ..core.substitution import SecretSubstitutionEngine
 from ..models import DestinationContext, ExecutionResult, ResolvedSecret
 from ..secrets.base import SecretStore
+from .curl_config import CurlConfigError, split_secret_arguments
 
 
 class PolicyViolationError(RuntimeError):
@@ -171,10 +172,17 @@ class TrustedExecutor:
             for reference in references:
                 if not self.policy_engine.allows_exec(reference):
                     raise deny(f"{reference.canonical} does not permit interpose-exec (allow_exec: true)", "unknown")
-            if _is_curl(command):
-                forbidden = _forbidden_curl_option(command)
-                if forbidden:
-                    raise deny(f"curl option {forbidden} is not allowed with secret references", "unknown")
+            # Only curl: any other program handed a credential can do anything with
+            # it, and argv inference cannot tell what that would be.
+            if not _is_curl(command):
+                raise deny("interpose-exec only runs curl with secret references; use the broker instead", "unknown")
+            forbidden = _forbidden_curl_option(command)
+            if forbidden:
+                raise deny(f"curl option {forbidden} is not allowed with secret references", "unknown")
+            try:
+                split_secret_arguments(command)
+            except CurlConfigError as exc:
+                raise deny(str(exc), "unknown") from exc
 
         inferred_destinations = _infer_destinations(command)
         if destination is not None:
@@ -239,15 +247,19 @@ class TrustedExecutor:
                 )
                 raise PolicyViolationError(decision.reason)
 
+        # Secrets travel on stdin as curl config, never in argv, where every process
+        # of the same user could read them.
+        argv, config = split_secret_arguments(command) if references else (list(command), "")
         substitution = SecretSubstitutionEngine(self._resolve_secret)
-        substitution_result = substitution.substitute(list(command))
-        resolved_command = list(substitution_result.value)
+        substitution_result = substitution.substitute(config)
+        resolved_config = substitution_result.value
         resolved_values = [resolution.value for resolution in substitution_result.resolutions]
         self.redaction_engine.register_many(resolved_values)
 
         try:
             completed = subprocess.run(
-                resolved_command,
+                argv,
+                input=resolved_config if config else None,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -278,7 +290,7 @@ class TrustedExecutor:
             details={"return_code": return_code},
         )
         return ExecutionResult(
-            command=tuple(resolved_command),
+            command=tuple(command),
             return_code=return_code,
             stdout=stdout,
             stderr=stderr,

@@ -60,7 +60,7 @@ Homepage = "https://github.com/Coelhomicka/interpose"
 Repository = "https://github.com/Coelhomicka/interpose"
 Issues = "https://github.com/Coelhomicka/interpose/issues"
 Changelog = "https://github.com/Coelhomicka/interpose/blob/main/CHANGELOG.md"
-"Threat Model" = "https://github.com/Coelhomicka/interpose/blob/main/docs/THREAT_MODEL.md"
+"Threat Model" = "https://github.com/Coelhomicka/interpose/blob/main/docs/en/THREAT_MODEL.md"
 
 [project.scripts]
 interpose = "interpose.cli.main:app"
@@ -74,6 +74,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "interpose.dashboard" = ["static/*"]
+"interpose.agents" = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

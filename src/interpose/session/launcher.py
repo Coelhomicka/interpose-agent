@@ -101,6 +101,10 @@ def build_session_environment(
     environment["INTERPOSE_AGENT"] = agent
     environment["INTERPOSE_SESSION"] = session
     environment["INTERPOSE_MODE"] = "reference-only"
+    if proxy_base:
+        # Agents and their instructions build broker URLs from this:
+        # "$INTERPOSE_PROXY/api.example.com/v1/...".
+        environment["INTERPOSE_PROXY"] = proxy_base.rstrip("/")
     environment.pop("INTERPOSE_MASTER_KEY", None)
     environment.pop("INTERPOSE_HOME", None)
 

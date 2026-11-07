@@ -35,6 +35,7 @@ from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from ..core.elevation import is_elevated
 from . import SERVICE_ACCOUNT, SERVICE_DISPLAY_NAME, SERVICE_NAME
 from .layout import ServiceLayout
 
@@ -52,13 +53,6 @@ class InstallError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- elevation
-
-
-def is_elevated() -> bool:
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except (AttributeError, OSError):
-        return False
 
 
 class SHELLEXECUTEINFOW(ctypes.Structure):

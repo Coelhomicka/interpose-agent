@@ -1,3 +1,5 @@
+**English** | [Português (Brasil)](../pt-br/THREAT_MODEL.md)
+
 # Threat Model
 
 ## Summary
@@ -11,7 +13,7 @@ The preferred model is reference-only execution: untrusted processes receive `se
 | Threat | Status | Notes |
 | --- | --- | --- |
 | Prompt injection | Partially Protected | References remain opaque, but an injected agent can attempt unsupported operations or direct egress. |
-| Malicious generated code | Partially Protected | The launcher supplies references only. Same-user filesystem and network isolation are not enforced yet. |
+| Malicious generated code | Partially Protected | The launcher supplies references only. With the Windows service the vault is out of the code's reach; network egress is not enforced yet, and without the service a same-user process can read the vault. |
 | Secret exfiltration through an allowed HTTP target | Partially Protected | Host, method, path, and injection-slot policies are checked before resolution. A reference in the body or an undeclared header/field is denied, so an allowed API cannot be used to publish or echo it. An allowed slot on an endpoint that reflects it remains a residual risk; narrow `paths`. |
 | Inherited environment credentials | Protected in managed sessions | The launcher builds the child environment from an allowlist and injects only declared references. |
 | Environment inspection | Protected in managed sessions | Inspection reveals references. Processes launched outside `interpose run` are out of scope. |
@@ -52,15 +54,17 @@ The current implementation guarantees that:
 6. audit records do not intentionally persist plaintext secrets;
 7. HTTP `CONNECT` is rejected instead of creating a false transparent-HTTPS guarantee.
 8. the explicit local transport derives the destination from `/proxy/{host}` and defaults external traffic to HTTPS;
-9. loopback listeners refuse browser-originated and DNS-rebound requests, and the admin API requires a token.
+9. loopback listeners refuse browser-originated and DNS-rebound requests, and the admin API requires a token;
+10. with the Windows service installed, the vault and master key are readable only by `NT SERVICE\Interpose`, SYSTEM and administrators, and the service loads code only from `%ProgramFiles%\Interpose`.
 
 ## Non-Guarantees
 
 The current implementation does not guarantee protection against:
 
-1. a malicious process running as the same operating-system user as the broker;
-2. direct network access that bypasses the local transport;
-3. memory scraping of the trusted broker;
-4. covert channels, DNS, QUIC, or unmanaged transports;
-5. secrets delivered through the limited `interpose-exec` compatibility mode;
-6. SDKs that require plaintext locally to validate, derive, encrypt, or sign.
+1. a malicious process running as the same operating-system user as the broker in development mode, or one that uses the service's control token to change policies through the dashboard;
+2. a process running elevated (administrator or SYSTEM);
+3. direct network access that bypasses the local transport;
+4. memory scraping of the trusted broker;
+5. covert channels, DNS, QUIC, or unmanaged transports;
+6. secrets delivered through the limited `interpose-exec` compatibility mode;
+7. SDKs that require plaintext locally to validate, derive, encrypt, or sign.

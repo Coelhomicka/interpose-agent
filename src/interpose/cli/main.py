@@ -34,6 +34,7 @@ env_app = typer.Typer(add_completion=False, help="Reference-only .env commands")
 policy_app = typer.Typer(add_completion=False, help="Policy administration commands")
 isolation_app = typer.Typer(add_completion=False, help="Process and network isolation commands")
 service_app = typer.Typer(add_completion=False, help="Install and control the Interpose OS service")
+agents_app = typer.Typer(add_completion=False, help="Teach coding agents how to use Interpose")
 interpose_exec_app = typer.Typer(
     add_completion=False,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
@@ -46,6 +47,7 @@ app.add_typer(env_app, name="env")
 app.add_typer(policy_app, name="policy")
 app.add_typer(isolation_app, name="isolation")
 app.add_typer(service_app, name="service")
+app.add_typer(agents_app, name="agents")
 
 
 def _container():
@@ -282,7 +284,29 @@ def run_session(
     ),
     session: str | None = typer.Option(None, help="Optional session identifier"),
     cwd: Path | None = typer.Option(None, exists=True, file_okay=False),
+    allow_elevated: bool = typer.Option(
+        False, "--allow-elevated", help="Start the agent even from an administrator shell (not recommended)."
+    ),
 ) -> None:
+    from ..core.elevation import is_elevated
+
+    if is_elevated():
+        if not allow_elevated:
+            typer.echo(
+                "Refusing to start an agent from an administrator shell: an elevated agent can read the vault, "
+                "the master key and the broker's memory, and no Interpose control applies to it. "
+                "Open a normal (non-administrator) terminal, or pass --allow-elevated to accept that risk.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        typer.secho("WARNING: the agent runs elevated; Interpose cannot contain it.", fg=typer.colors.RED, err=True)
+    if not service_installed() and os.name == "nt":
+        typer.secho(
+            "Development mode: this agent can read the vault in your profile directly. "
+            "Run `interpose setup` once to move it into a protected service.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
     try:
         session_profile = SessionProfile.from_path(profile)
         return_code = _session_launcher(cwd).run(
@@ -520,6 +544,10 @@ def _preflight_install() -> None:
 def setup(
     keep_user_vault: bool = typer.Option(False, help="Copy the development vault instead of moving it."),
     source: str | None = typer.Option(None, help="What to pip-install into the service (default: this install)."),
+    agent_instructions: bool = typer.Option(
+        True, "--agent-instructions/--no-agent-instructions",
+        help="Also install user-level instructions for the coding agents found on this machine.",
+    ),
 ) -> None:
     """Install Interpose as a Windows service (one administrator prompt)."""
     from ..config import _current_user_sid
@@ -534,6 +562,9 @@ def setup(
         source=source or default_source(),
         keep_user_vault=keep_user_vault,
     )
+    if agent_instructions:
+        typer.echo("")
+        _install_agent_targets(_agents().global_targets(Path.home()), scope="user-level")
     typer.echo("Done. Run `interpose up` in a project folder to open the dashboard.")
 
 
@@ -543,7 +574,7 @@ def service_install(
     source: str | None = typer.Option(None, help="What to pip-install into the service (default: this install)."),
 ) -> None:
     """Same as `interpose setup`."""
-    setup(keep_user_vault=keep_user_vault, source=source)
+    setup(keep_user_vault=keep_user_vault, source=source, agent_instructions=True)
 
 
 @service_app.command("uninstall")
@@ -597,6 +628,68 @@ def service_elevated(
     code = _elevated_task(task, log_file=log, user_sid=user_sid, user_home=user_home, source=source,
                           keep_user_vault=keep_user_vault, purge=purge)
     raise typer.Exit(code=code)
+
+
+# --------------------------------------------------------------------------- agents
+
+
+def _agents():
+    from .. import agents
+
+    return agents
+
+
+def _install_agent_targets(targets, *, scope: str) -> None:
+    if not targets:
+        typer.echo(f"No {scope} agent configuration folders found; nothing installed.")
+        return
+    typer.echo(f"Agent instructions ({scope}):")
+    for target in targets:
+        try:
+            outcome = target.install()
+        except OSError as exc:
+            typer.echo(f"  failed   {target.path}: {exc}", err=True)
+            continue
+        typer.echo(f"  {outcome:<8} {target.path}  ({target.tools})")
+
+
+@agents_app.command("install")
+def agents_install(
+    project: Path = typer.Option(Path("."), "--project", exists=True, file_okay=False,
+                                 help="Project folder to write AGENTS.md, CLAUDE.md, GEMINI.md and the Cursor rule."),
+    user_level: bool = typer.Option(False, "--global", help="Install user-level files instead of project files."),
+) -> None:
+    """Write instructions that teach agents to call APIs through Interpose."""
+    agents = _agents()
+    if user_level:
+        _install_agent_targets(agents.global_targets(Path.home()), scope="user-level")
+    else:
+        _install_agent_targets(agents.project_targets(project.resolve()), scope=f"project {project.resolve()}")
+    typer.echo("For tools configured in a settings screen (Devin knowledge, Cursor user rules), "
+               "paste the output of `interpose agents print`.")
+
+
+@agents_app.command("remove")
+def agents_remove(
+    project: Path = typer.Option(Path("."), "--project", exists=True, file_okay=False),
+    user_level: bool = typer.Option(False, "--global", help="Remove the user-level files instead."),
+) -> None:
+    """Remove the Interpose instructions; the rest of each file is kept."""
+    agents = _agents()
+    targets = agents.global_targets(Path.home()) if user_level else agents.project_targets(project.resolve())
+    for target in targets:
+        outcome = target.remove()
+        if outcome:
+            typer.echo(f"  {outcome:<8} {target.path}")
+
+
+@agents_app.command("print")
+def agents_print(
+    skill: bool = typer.Option(False, "--skill", help="Print as a SKILL.md with frontmatter."),
+) -> None:
+    """Print the instructions, to paste into any agent's rules or knowledge settings."""
+    agents = _agents()
+    typer.echo(agents.skill_document() if skill else agents.instructions(), nl=False)
 
 
 @interpose_exec_app.command()

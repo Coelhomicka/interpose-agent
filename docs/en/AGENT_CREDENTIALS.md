@@ -1,3 +1,5 @@
+**English** | [Português (Brasil)](../pt-br/AGENT_CREDENTIALS.md)
+
 # Agent Credential Contract
 
 ## Purpose
@@ -36,6 +38,7 @@ Correct `.env`:
 ```dotenv
 API_KEY=secret://apichave/teste
 API_BASE=http://127.0.0.1:9876/proxy/api.exemplo.com
+# or, inside a registered project: http://127.0.0.1:9876/p/<project>/proxy/api.exemplo.com
 ```
 
 Incorrect `.env`:

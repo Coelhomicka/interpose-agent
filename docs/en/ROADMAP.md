@@ -1,3 +1,5 @@
+**English** | [Português (Brasil)](../pt-br/ROADMAP.md)
+
 # Roadmap
 
 ## Implemented MVP
@@ -21,13 +23,21 @@
 - JSON, header, and body substitution
 - explicit rejection of unsupported HTTPS `CONNECT`
 - limited `interpose-exec` compatibility mode
+- injection slots, path allow-lists, and explicit `allow_exec` in policies
+- project and global scopes for secrets and policies
+- `interpose up` with a local configuration dashboard
+- Windows service under `NT SERVICE\Interpose`: private runtime in Program Files, ACL-protected
+  vault, one-time `interpose setup`
+- per-project broker routing (`/p/{project}/proxy/...`) and `${INTERPOSE_PROXY}` in profiles
 
 ## V2: Enforced isolation
 
-- trusted daemon under a separate OS identity
+- ~~trusted daemon under a separate OS identity~~ — done on Windows; Linux (systemd `DynamicUser=`)
+  and macOS (launchd) next
+- ~~filesystem ACLs for vault and master key~~ — done on Windows
+- user presence (Windows Hello, Touch ID, polkit) to open a dashboard session
 - authenticated Named Pipe on Windows
 - authenticated Unix socket on Linux and macOS
-- filesystem ACLs for vault and master key
 - Linux namespaces and nftables egress enforcement
 - Windows Filtering Platform and AppContainer integration
 - macOS Network Extension and sandbox support
