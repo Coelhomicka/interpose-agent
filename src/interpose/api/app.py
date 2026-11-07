@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
+import hmac
+import secrets
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from ..container import RuntimeContainer, create_container
+from ..core.local_guard import browser_request_rejection, is_loopback_authority
 from ..core.policies import PolicyDocument
 from ..models import (
     AuditEntryResponse,
@@ -11,6 +16,7 @@ from ..models import (
     SecretCreateRequest,
     SecretMetadataResponse,
 )
+from ..secrets.base import SecretValueError
 
 
 def _secret_response(metadata) -> SecretMetadataResponse:
@@ -36,9 +42,43 @@ def _policy_response(record) -> PolicyMetadataResponse:
     )
 
 
-def create_app(container: RuntimeContainer | None = None) -> FastAPI:
+_UNAUTHENTICATED_PATHS = {"/health"}
+
+
+def generate_admin_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def create_app(container: RuntimeContainer | None = None, *, admin_token: str | None = None) -> FastAPI:
+    """Build the admin API.
+
+    Every route except ``/health`` requires ``Authorization: Bearer <admin_token>``.
+    The token lives only in this process and the operator's terminal; it is never
+    written to disk, where a same-user agent could read it. Without it, any local
+    process could register a policy that allows its own host and then spend the
+    secret through the broker.
+    """
     runtime = container or create_container()
-    app = FastAPI(title="Interpose Admin API", version="0.1.0")
+    token = admin_token or generate_admin_token()
+    app = FastAPI(title="Interpose Admin API", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.admin_token = token
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        rejection = browser_request_rejection(request.headers)
+        if rejection is not None:
+            return JSONResponse({"detail": rejection}, status_code=403)
+        if not is_loopback_authority(request.headers.get("host", "")):
+            return JSONResponse({"detail": "Host must be the loopback admin API"}, status_code=403)
+        if request.url.path not in _UNAUTHENTICATED_PATHS:
+            scheme, _, presented = request.headers.get("authorization", "").partition(" ")
+            if scheme.lower() != "bearer" or not hmac.compare_digest(presented.encode(), token.encode()):
+                return JSONResponse(
+                    {"detail": "admin token required"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return await call_next(request)
 
     def get_runtime() -> RuntimeContainer:
         return runtime
@@ -63,7 +103,10 @@ def create_app(container: RuntimeContainer | None = None) -> FastAPI:
         payload: SecretCreateRequest,
         container: RuntimeContainer = Depends(get_runtime),
     ) -> SecretMetadataResponse:
-        metadata = container.secret_store.store(payload.reference, payload.value)
+        try:
+            metadata = container.secret_store.store(payload.reference, payload.value)
+        except SecretValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return _secret_response(metadata)
 
     @app.delete("/secrets/{secret_id}", status_code=204)

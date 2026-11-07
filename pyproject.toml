@@ -11,7 +11,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-authors = [{ name = "Mickael Coelho", email = "mcmickael9@gmail.com" }]
+authors = [{ name = "Mickael Coelho" }]
 keywords = [
   "secrets",
   "credentials",
@@ -56,11 +56,13 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Coelhomicka/interpose"
-Repository = "https://github.com/Coelhomicka/interpose"
-Issues = "https://github.com/Coelhomicka/interpose/issues"
-Changelog = "https://github.com/Coelhomicka/interpose/blob/main/CHANGELOG.md"
-"Threat Model" = "https://github.com/Coelhomicka/interpose/blob/main/docs/THREAT_MODEL.md"
+Homepage = "https://github.com/Coelhomicka/interpose-agent"
+Repository = "https://github.com/Coelhomicka/interpose-agent"
+Issues = "https://github.com/Coelhomicka/interpose-agent/issues"
+Changelog = "https://github.com/Coelhomicka/interpose-agent/blob/main/CHANGELOG.md"
+"Threat Model" = "https://github.com/Coelhomicka/interpose-agent/blob/main/docs/en/THREAT_MODEL.md"
+"Author GitHub" = "https://github.com/Coelhomicka"
+"Author LinkedIn" = "https://www.linkedin.com/in/mickael-coelho/"
 
 [project.scripts]
 interpose = "interpose.cli.main:app"
@@ -71,6 +73,10 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"interpose.dashboard" = ["static/*"]
+"interpose.agents" = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

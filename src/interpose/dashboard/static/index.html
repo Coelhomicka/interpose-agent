@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interpose</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true" class="brand-mark"><path d="M12 2 3 6v6c0 5 3.8 9.3 9 10 5.2-.7 9-5 9-10V6l-9-4Zm0 5a3 3 0 0 1 1 5.8V16h-2v-3.2A3 3 0 0 1 12 7Z"/></svg>
+      <span>Interpose</span>
+    </div>
+    <div class="project-chip" id="project-chip" title=""></div>
+    <div class="spacer"></div>
+    <div class="proxy-status" id="proxy-status"><span class="dot"></span><span id="proxy-label">Proxy</span></div>
+  </header>
+
+  <nav class="sidenav" aria-label="Sections">
+    <button class="nav-item" data-view="secrets">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14a3 3 0 1 1 2.8-4H21v3h-2v3h-3v-3H9.8A3 3 0 0 1 7 14Zm0-2a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+      <span>Secrets</span>
+    </button>
+    <button class="nav-item" data-view="policies">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.6 8 11 4.6-1.4 8-6 8-11V5l-8-3Zm-1 14-4-4 1.4-1.4 2.6 2.6 5.6-5.6L18 9l-7 7Z"/></svg>
+      <span>Policies</span>
+    </button>
+    <button class="nav-item" data-view="activity">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4v2h-2.6L14 22 10 6l-1.6 6H3v-0Z"/></svg>
+      <span>Activity</span>
+    </button>
+    <button class="nav-item" data-view="connect">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3 2 12l6 9h2.4l-6-9 6-9H8Zm8 0h-2.4l6 9-6 9H16l6-9-6-9Z"/></svg>
+      <span>Connect</span>
+    </button>
+  </nav>
+
+  <main class="content" id="content" tabindex="-1"></main>
+
+  <dialog id="secret-dialog" class="dialog">
+    <form method="dialog" id="secret-form">
+      <h2 id="secret-dialog-title">Add secret</h2>
+      <fieldset class="scope-picker">
+        <legend>Scope</legend>
+        <label class="radio-card"><input type="radio" name="scope" value="project">
+          <span><strong>This project</strong><small>Only used when the runtime runs in this folder. Overrides a global secret with the same reference.</small></span></label>
+        <label class="radio-card"><input type="radio" name="scope" value="global">
+          <span><strong>Global</strong><small>Available to every project on this machine.</small></span></label>
+      </fieldset>
+      <label class="field"><span>Reference</span>
+        <div class="prefixed"><span>secret://</span><input name="reference" required autocomplete="off" spellcheck="false" placeholder="openai/prod"></div>
+        <small>Provider and name, e.g. <code>openai/prod</code> or <code>github/ci/token</code>.</small>
+      </label>
+      <label class="field"><span>Value</span>
+        <input name="value" type="password" required autocomplete="new-password" spellcheck="false">
+        <small>Write-only. The value is encrypted immediately and never shown again — not here, not by the API.</small>
+      </label>
+      <p class="form-error" id="secret-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save secret</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="policy-dialog" class="dialog wide">
+    <form method="dialog" id="policy-form">
+      <h2>Policy</h2>
+      <p class="muted">Where this secret may be sent. Everything not listed here is denied before the secret is decrypted.</p>
+      <div class="grid-2">
+        <div>
+          <label class="field"><span>Secret</span>
+            <div class="prefixed"><span>secret://</span><input name="secret" required autocomplete="off" spellcheck="false"></div>
+          </label>
+          <fieldset class="scope-picker compact">
+            <legend>Applies</legend>
+            <label class="radio-card"><input type="radio" name="scope" value="project">
+              <span><strong>In this project</strong><small>Overrides the global policy here.</small></span></label>
+            <label class="radio-card"><input type="radio" name="scope" value="global">
+              <span><strong>Everywhere</strong><small>Default for all projects.</small></span></label>
+          </fieldset>
+          <label class="field"><span>Allowed hosts</span>
+            <textarea name="hosts" rows="3" required spellcheck="false" placeholder="api.openai.com"></textarea>
+            <small>One per line. <code>*.example.com</code> wildcards are allowed.</small>
+          </label>
+          <label class="field"><span>Allowed paths <em>(optional)</em></span>
+            <textarea name="paths" rows="2" spellcheck="false" placeholder="/v1/*"></textarea>
+            <small>Leave empty to allow any path on the hosts above.</small>
+          </label>
+        </div>
+        <div>
+          <fieldset class="field">
+            <legend>Methods</legend>
+            <div class="checks" id="method-checks"></div>
+            <small>None selected means any HTTP method.</small>
+          </fieldset>
+          <fieldset class="field">
+            <legend>Credential location</legend>
+            <div id="inject-rows"></div>
+            <button type="button" class="btn small" id="add-inject">Add location</button>
+            <small>Where the agent may place the reference. Anywhere else — a body, a message, another header — is refused.</small>
+          </fieldset>
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <label class="check"><input type="checkbox" name="allow_insecure_http"> Allow plain HTTP to non-loopback hosts</label>
+            <label class="check danger"><input type="checkbox" name="allow_exec"> Allow <code>interpose-exec</code> (the subprocess receives the plaintext)</label>
+          </details>
+          <div class="yaml-preview"><span>Policy as YAML</span><pre id="yaml-preview"></pre></div>
+        </div>
+      </div>
+      <p class="form-error" id="policy-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save policy</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog narrow">
+    <form method="dialog">
+      <h2 id="confirm-title">Are you sure?</h2>
+      <p id="confirm-body"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="ok" class="btn danger" id="confirm-ok">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

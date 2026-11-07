@@ -17,7 +17,7 @@ Does this change any of the following?
 - [ ] What crosses between the trusted and untrusted zones
 
 **If any box is checked**, this PR needs a linked issue with an agreed design, and
-[`docs/THREAT_MODEL.md`](../docs/THREAT_MODEL.md) must be updated to match.
+[`docs/en/THREAT_MODEL.md`](../docs/en/THREAT_MODEL.md) must be updated to match.
 
 ## Checklist
 

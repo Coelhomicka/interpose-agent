@@ -7,6 +7,12 @@ from fastapi.testclient import TestClient
 from interpose.core.policies import PolicyDocument
 from interpose.proxy.http_proxy import create_proxy_app, parse_local_transport_target, parse_proxy_target
 
+BROKER_URL = "http://127.0.0.1:9876"
+
+
+def _client(container):
+    return TestClient(create_proxy_app(container), base_url=BROKER_URL)
+
 
 def test_local_transport_defaults_external_destination_to_https():
     target = parse_local_transport_target(
@@ -104,19 +110,19 @@ schemes:
             )
 
     monkeypatch.setattr("interpose.proxy.http_proxy.httpx.AsyncClient", FakeAsyncClient)
-    client = TestClient(create_proxy_app(runtime_container))
+    client = _client(runtime_container)
 
     response = client.post(
         "/proxy/api.example.com/v1/resource",
         headers={"Authorization": "Bearer secret://service/prod"},
-        json={"credential": "secret://service/prod"},
+        json={"input": "hello"},
     )
 
     assert response.status_code == 200
     assert response.json() == {"echo": "[REDACTED]"}
     assert captured["url"] == "https://api.example.com/v1/resource"
     assert captured["headers"]["authorization"] == "Bearer real-secret-value"
-    assert captured["json"] == {"credential": "real-secret-value"}
+    assert captured["json"] == {"input": "hello"}
     assert captured["client_options"]["trust_env"] is False
 
 
@@ -137,7 +143,7 @@ allow:
         raise AssertionError(f"secret resolved before policy decision: {reference}")
 
     monkeypatch.setattr(runtime_container.secret_store, "resolve", fail_if_resolved)
-    client = TestClient(create_proxy_app(runtime_container))
+    client = _client(runtime_container)
 
     response = client.get(
         "/proxy/evil.example/collect",

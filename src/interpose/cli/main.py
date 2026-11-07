@@ -1,22 +1,30 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import os
+import socket
+import tempfile
+import webbrowser
 from pathlib import Path
 
 import typer
 import uvicorn
 
-from ..api.app import create_app
+from ..api.app import create_app, generate_admin_token
 from ..container import create_container
+from ..core.local_guard import require_loopback_bind
 from ..core.policies import PolicyDocument, PolicyError
 from ..core.references import SecretReferenceError, normalize_secret_reference
 from ..executor.trusted_executor import ExecutionPreparationError, PolicyViolationError
 from ..proxy.http_proxy import create_proxy_app
-from ..secrets.base import SecretNotFound
+from ..secrets.base import SecretNotFound, SecretValueError
+from ..service.layout import DEFAULT_PROXY_PORT, ServiceLayout, service_installed
 from ..session.dotenv import DotenvValidationError, validate_dotenv
 from ..session.isolation.base import IsolationError
 from ..session.isolation.factory import create_isolation_backend
-from ..session.launcher import SessionLaunchError
+from ..session.launcher import SessionLauncher, SessionLaunchError
 from ..session.profile import SessionProfile, SessionProfileError
 
 app = typer.Typer(add_completion=False, help="Administrative CLI for Interpose")
@@ -25,6 +33,8 @@ profile_app = typer.Typer(add_completion=False, help="Session profile commands")
 env_app = typer.Typer(add_completion=False, help="Reference-only .env commands")
 policy_app = typer.Typer(add_completion=False, help="Policy administration commands")
 isolation_app = typer.Typer(add_completion=False, help="Process and network isolation commands")
+service_app = typer.Typer(add_completion=False, help="Install and control the Interpose OS service")
+agents_app = typer.Typer(add_completion=False, help="Teach coding agents how to use Interpose")
 interpose_exec_app = typer.Typer(
     add_completion=False,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
@@ -36,10 +46,60 @@ app.add_typer(profile_app, name="profile")
 app.add_typer(env_app, name="env")
 app.add_typer(policy_app, name="policy")
 app.add_typer(isolation_app, name="isolation")
+app.add_typer(service_app, name="service")
+app.add_typer(agents_app, name="agents")
 
 
 def _container():
-    return create_container()
+    if service_installed():
+        # The vault belongs to the service account now; this user cannot open it,
+        # which is the point. Configuration goes through the dashboard.
+        typer.echo(
+            "The vault is managed by the Interpose service. Use `interpose up` to open the dashboard.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    # The registered project containing the current folder, if any, becomes the
+    # active scope: its secrets and policies resolve before the global ones.
+    return create_container(project_root=Path.cwd())
+
+
+class _ServiceReferences:
+    """Ask the service whether a reference exists, from a given folder's scope."""
+
+    def __init__(self, client, working_directory: Path) -> None:
+        self._client = client
+        self._working_directory = working_directory
+
+    def exists(self, reference: str) -> bool:
+        return self._client.secret_exists(reference, self._working_directory)
+
+
+def _session_launcher(cwd: Path | None) -> SessionLauncher:
+    working_directory = (cwd or Path.cwd()).resolve()
+    if service_installed():
+        from ..service.client import ServiceClient, ServiceUnavailable
+
+        try:
+            client = ServiceClient.connect()
+            client.verify_identity()
+            proxy_base = client.proxy_base(working_directory)
+        except ServiceUnavailable as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+        return SessionLauncher(
+            secret_store=_ServiceReferences(client, working_directory),
+            audit_logger=None,
+            runtime_home=Path.home() / ".interpose",
+            proxy_base=proxy_base,
+        )
+    container = create_container(project_root=working_directory)
+    project = container.project
+    port = os.environ.get("INTERPOSE_PROXY_PORT", str(DEFAULT_PROXY_PORT))
+    prefix = f"/p/{project.id}" if project else ""
+    launcher = container.session_launcher
+    launcher.proxy_base = f"http://127.0.0.1:{port}{prefix}/proxy"
+    return launcher
 
 
 @secret_app.command("add")
@@ -51,6 +111,9 @@ def secret_add(reference: str) -> None:
         metadata = container.secret_store.store(normalized_reference, secret_value)
     except SecretReferenceError as exc:
         typer.echo(f"Invalid secret reference: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except SecretValueError as exc:
+        typer.echo(f"Invalid secret value: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo("Secret stored:")
     typer.echo(metadata.reference)
@@ -115,7 +178,7 @@ def secret_inspect(identifier: str) -> None:
 def profile_validate(path: Path) -> None:
     try:
         profile = SessionProfile.from_path(path)
-        _container().session_launcher.validate_bindings(profile)
+        _session_launcher(None).validate_bindings(profile)
     except (SessionProfileError, SessionLaunchError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -221,10 +284,32 @@ def run_session(
     ),
     session: str | None = typer.Option(None, help="Optional session identifier"),
     cwd: Path | None = typer.Option(None, exists=True, file_okay=False),
+    allow_elevated: bool = typer.Option(
+        False, "--allow-elevated", help="Start the agent even from an administrator shell (not recommended)."
+    ),
 ) -> None:
+    from ..core.elevation import is_elevated
+
+    if is_elevated():
+        if not allow_elevated:
+            typer.echo(
+                "Refusing to start an agent from an administrator shell: an elevated agent can read the vault, "
+                "the master key and the broker's memory, and no Interpose control applies to it. "
+                "Open a normal (non-administrator) terminal, or pass --allow-elevated to accept that risk.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        typer.secho("WARNING: the agent runs elevated; Interpose cannot contain it.", fg=typer.colors.RED, err=True)
+    if not service_installed() and os.name == "nt":
+        typer.secho(
+            "Development mode: this agent can read the vault in your profile directly. "
+            "Run `interpose setup` once to move it into a protected service.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
     try:
         session_profile = SessionProfile.from_path(profile)
-        return_code = _container().session_launcher.run(
+        return_code = _session_launcher(cwd).run(
             list(ctx.args),
             profile=session_profile,
             agent=agent,
@@ -237,14 +322,374 @@ def run_session(
     raise typer.Exit(code=return_code)
 
 
+def _loopback_or_exit(host: str) -> None:
+    try:
+        require_loopback_bind(host)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
 @app.command("api")
 def run_api(host: str = "127.0.0.1", port: int = 8000) -> None:
-    uvicorn.run(create_app(), host=host, port=port, log_level="info")
+    _loopback_or_exit(host)
+    token = generate_admin_token()
+    # Shown once, on the operator's terminal only. It is not persisted anywhere an
+    # agent running as the same user could read it back.
+    typer.echo(f"Admin API token (send as 'Authorization: Bearer <token>'): {token}", err=True)
+    uvicorn.run(create_app(admin_token=token), host=host, port=port, log_level="info")
 
 
 @app.command("proxy")
 def run_proxy(host: str = "127.0.0.1", port: int = 9876) -> None:
-    uvicorn.run(create_proxy_app(), host=host, port=port, log_level="info")
+    _loopback_or_exit(host)
+    uvicorn.run(create_proxy_app(_container()), host=host, port=port, log_level="info")
+
+
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+@app.command("up")
+def up(
+    project_dir: Path = typer.Option(Path("."), "--project-dir", exists=True, file_okay=False,
+                                     help="Folder whose project scope is active."),
+    proxy_port: int = typer.Option(9876, help="Broker port agents connect to."),
+    dashboard_port: int = typer.Option(18888, help="Dashboard port; a free one is chosen if taken."),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the dashboard in the browser."),
+) -> None:
+    """Start the broker and the configuration dashboard together, like `aspire run`."""
+    from ..dashboard.app import DashboardAuth, DashboardContext, create_dashboard_app
+
+    working_directory = project_dir.resolve()
+    if service_installed():
+        _open_service_dashboard(working_directory, open_browser)
+        return
+    container = create_container(project_root=working_directory)
+    if not _port_is_free(proxy_port):
+        typer.echo(f"Port {proxy_port} is in use; pass --proxy-port to choose another.", err=True)
+        raise typer.Exit(code=1)
+    if not _port_is_free(dashboard_port):
+        dashboard_port = _free_port()
+
+    proxy_url = f"http://127.0.0.1:{proxy_port}"
+    auth = DashboardAuth()
+    dashboard = create_dashboard_app(container, DashboardContext(working_directory, proxy_url), auth)
+    login_url = f"http://127.0.0.1:{dashboard_port}/login?t={auth.login_token}"
+
+    project = container.project
+    typer.echo("")
+    typer.secho("  Interpose", bold=True)
+    typer.echo(f"  Project:    {project.name} ({project.root})" if project else
+               f"  Project:    none - global scope only ({working_directory})")
+    typer.echo(f"  Proxy:      {proxy_url}")
+    typer.echo(f"  Dashboard:  {login_url}")
+    typer.echo("              (single-use login link; restart for a new one)")
+    typer.echo("")
+    if os.name == "nt":
+        typer.secho(
+            "  Development mode: the vault in your profile is readable by any program running as you,\n"
+            "  agents included. Run `interpose setup` once to move it into a protected OS service.",
+            fg=typer.colors.YELLOW,
+        )
+        typer.echo("")
+    typer.echo("  Press Ctrl+C to stop.", err=True)
+
+    servers = [
+        uvicorn.Server(uvicorn.Config(create_proxy_app(container), host="127.0.0.1", port=proxy_port,
+                                      log_level="warning")),
+        uvicorn.Server(uvicorn.Config(dashboard, host="127.0.0.1", port=dashboard_port, log_level="warning")),
+    ]
+
+    async def serve() -> None:
+        async def open_when_ready() -> None:
+            while not servers[1].started:
+                await asyncio.sleep(0.05)
+            if open_browser:
+                webbrowser.open(login_url)
+
+        await asyncio.gather(*(server.serve() for server in servers), open_when_ready())
+
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(serve())
+
+
+def _open_service_dashboard(working_directory: Path, open_browser: bool) -> None:
+    from ..service.client import ServiceClient, ServiceUnavailable
+
+    try:
+        client = ServiceClient.connect()
+        client.verify_identity()
+        login_url = client.login_url(working_directory)
+        project_id = client.project_id(working_directory)
+    except ServiceUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("")
+    typer.secho("  Interpose (service)", bold=True)
+    typer.echo(f"  Project:    {project_id or 'none - global scope only'} ({working_directory})")
+    typer.echo(f"  Proxy:      {client.proxy_base(working_directory)}")
+    typer.echo(f"  Dashboard:  {login_url}")
+    typer.echo("              (single-use login link, valid for 5 minutes)")
+    typer.echo("")
+    if open_browser:
+        webbrowser.open(login_url)
+
+
+# --------------------------------------------------------------------------- service
+
+
+def _run_service_task(task: str, **options: str | bool) -> None:
+    """Run an install/uninstall/start/stop task elevated, showing its log."""
+    from ..service.install import InstallError, is_elevated, run_elevated
+
+    if os.name != "nt":
+        typer.echo("The Interpose service is only available on Windows for now.", err=True)
+        raise typer.Exit(code=1)
+    descriptor, log_name = tempfile.mkstemp(prefix="interpose-setup-", suffix=".log")
+    os.close(descriptor)  # the elevated child writes it; an open handle here would block the cleanup
+    log_file = Path(log_name)
+    arguments = ["-m", "interpose.cli.main", "service", "elevated", task, "--log", str(log_file)]
+    for name, value in options.items():
+        flag = "--" + name.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                arguments.append(flag)
+        else:
+            arguments += [flag, value]
+    if task in {"install", "uninstall"}:
+        typer.echo("Windows will ask for administrator approval once.")
+    if task == "install":
+        typer.echo("Installing: copies a private Python runtime and downloads dependencies (1-3 minutes)...")
+    try:
+        if is_elevated():
+            code = _elevated_task(task, log_file=log_file, echo=True, **options)
+        else:
+            code = run_elevated(arguments)
+            typer.echo(log_file.read_text(encoding="utf-8", errors="replace"), nl=False)
+    except InstallError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        log_file.unlink(missing_ok=True)
+    if code != 0:
+        raise typer.Exit(code=code)
+
+
+def _elevated_task(task: str, *, log_file: Path, echo: bool = False, **options) -> int:
+    from ..service.install import InstallError, install, uninstall
+
+    layout = ServiceLayout.default()
+    with open(log_file, "a", encoding="utf-8") as stream:
+        def log(message: str) -> None:
+            stream.write(message + "\n")
+            stream.flush()
+            if echo:
+                typer.echo(message)
+
+        try:
+            if task == "install":
+                install(layout, user_sid=options["user_sid"], user_home=Path(options["user_home"]),
+                        source=options["source"], keep_user_vault=bool(options.get("keep_user_vault")), log=log)
+            elif task == "uninstall":
+                uninstall(layout, purge=bool(options.get("purge")), log=log)
+            elif task in {"start", "stop"}:
+                import subprocess
+
+                from ..service import SERVICE_NAME
+
+                result = subprocess.run(["sc", task, SERVICE_NAME], capture_output=True, text=True, check=False)
+                log(f"sc {task}: exit {result.returncode}")
+                return 0 if result.returncode == 0 else 1
+            else:
+                log(f"unknown task: {task}")
+                return 2
+        except (InstallError, OSError) as exc:
+            log(f"error: {exc}")
+            return 1
+    return 0
+
+
+def _preflight_install() -> None:
+    from ..service.win32 import listener_pid, service_pid
+
+    if os.environ.get("INTERPOSE_MODE") == "reference-only":
+        typer.echo("Refusing to install from inside an `interpose run` session; run setup yourself.", err=True)
+        raise typer.Exit(code=1)
+    if os.environ.get("INTERPOSE_MASTER_KEY"):
+        typer.echo("INTERPOSE_MASTER_KEY is set; the service only uses a protected key file. Unset it first.",
+                   err=True)
+        raise typer.Exit(code=1)
+    service = service_pid()
+    for port in (DEFAULT_PROXY_PORT, 18888):
+        owner = listener_pid(port)
+        if owner is not None and owner != service:
+            typer.echo(f"Port {port} is in use by process {owner} (an `interpose up` still running?). "
+                       "Stop it and run setup again.", err=True)
+            raise typer.Exit(code=1)
+
+
+@app.command("setup")
+def setup(
+    keep_user_vault: bool = typer.Option(False, help="Copy the development vault instead of moving it."),
+    source: str | None = typer.Option(None, help="What to pip-install into the service (default: this install)."),
+    agent_instructions: bool = typer.Option(
+        True, "--agent-instructions/--no-agent-instructions",
+        help="Also install user-level instructions for the coding agents found on this machine.",
+    ),
+) -> None:
+    """Install Interpose as a Windows service (one administrator prompt)."""
+    from ..config import _current_user_sid
+    from ..service.install import default_source
+
+    if os.name == "nt":
+        _preflight_install()
+    _run_service_task(
+        "install",
+        user_sid=_current_user_sid(),
+        user_home=str(Path.home()),
+        source=source or default_source(),
+        keep_user_vault=keep_user_vault,
+    )
+    if agent_instructions:
+        typer.echo("")
+        _install_agent_targets(_agents().global_targets(Path.home()), scope="user-level")
+    typer.echo("Done. Run `interpose up` in a project folder to open the dashboard.")
+
+
+@service_app.command("install")
+def service_install(
+    keep_user_vault: bool = typer.Option(False, help="Copy the development vault instead of moving it."),
+    source: str | None = typer.Option(None, help="What to pip-install into the service (default: this install)."),
+) -> None:
+    """Same as `interpose setup`."""
+    setup(keep_user_vault=keep_user_vault, source=source, agent_instructions=True)
+
+
+@service_app.command("uninstall")
+def service_uninstall(
+    purge: bool = typer.Option(False, help="Also destroy the vault. Every stored secret is lost."),
+) -> None:
+    """Remove the service. The vault is kept unless --purge is given."""
+    if purge and not typer.confirm("Destroy the vault and every secret in it? This cannot be undone"):
+        raise typer.Exit(code=1)
+    _run_service_task("uninstall", purge=purge)
+
+
+@service_app.command("start")
+def service_start() -> None:
+    _run_service_task("start")
+
+
+@service_app.command("stop")
+def service_stop() -> None:
+    _run_service_task("stop")
+
+
+@service_app.command("status")
+def service_status_command() -> None:
+    from ..service.win32 import service_status
+
+    layout = ServiceLayout.default()
+    status = service_status() if os.name == "nt" else None
+    if status is None:
+        typer.echo("Not installed (development mode: the vault is in your profile).")
+        raise typer.Exit(code=1)
+    states = {1: "stopped", 2: "starting", 3: "stopping", 4: "running"}
+    typer.echo(f"Service:  {states.get(status[0], status[0])} (pid {status[1] or '-'})")
+    typer.echo(f"Runtime:  {layout.program_dir}")
+    typer.echo(f"Vault:    {layout.vault_dir}")
+    if layout.endpoint_file.is_file():
+        typer.echo(f"Endpoint: {layout.endpoint_file.read_text(encoding='utf-8')}")
+
+
+@service_app.command("elevated", hidden=True)
+def service_elevated(
+    task: str,
+    log: Path = typer.Option(...),
+    user_sid: str = typer.Option(""),
+    user_home: str = typer.Option(""),
+    source: str = typer.Option(""),
+    keep_user_vault: bool = typer.Option(False),
+    purge: bool = typer.Option(False),
+) -> None:
+    """Internal: the part of a service task that runs behind the UAC prompt."""
+    code = _elevated_task(task, log_file=log, user_sid=user_sid, user_home=user_home, source=source,
+                          keep_user_vault=keep_user_vault, purge=purge)
+    raise typer.Exit(code=code)
+
+
+# --------------------------------------------------------------------------- agents
+
+
+def _agents():
+    from .. import agents
+
+    return agents
+
+
+def _install_agent_targets(targets, *, scope: str) -> None:
+    if not targets:
+        typer.echo(f"No {scope} agent configuration folders found; nothing installed.")
+        return
+    typer.echo(f"Agent instructions ({scope}):")
+    for target in targets:
+        try:
+            outcome = target.install()
+        except OSError as exc:
+            typer.echo(f"  failed   {target.path}: {exc}", err=True)
+            continue
+        typer.echo(f"  {outcome:<8} {target.path}  ({target.tools})")
+
+
+@agents_app.command("install")
+def agents_install(
+    project: Path = typer.Option(Path("."), "--project", exists=True, file_okay=False,
+                                 help="Project folder to write AGENTS.md, CLAUDE.md, GEMINI.md and the Cursor rule."),
+    user_level: bool = typer.Option(False, "--global", help="Install user-level files instead of project files."),
+) -> None:
+    """Write instructions that teach agents to call APIs through Interpose."""
+    agents = _agents()
+    if user_level:
+        _install_agent_targets(agents.global_targets(Path.home()), scope="user-level")
+    else:
+        _install_agent_targets(agents.project_targets(project.resolve()), scope=f"project {project.resolve()}")
+    typer.echo("For tools configured in a settings screen (Devin knowledge, Cursor user rules), "
+               "paste the output of `interpose agents print`.")
+
+
+@agents_app.command("remove")
+def agents_remove(
+    project: Path = typer.Option(Path("."), "--project", exists=True, file_okay=False),
+    user_level: bool = typer.Option(False, "--global", help="Remove the user-level files instead."),
+) -> None:
+    """Remove the Interpose instructions; the rest of each file is kept."""
+    agents = _agents()
+    targets = agents.global_targets(Path.home()) if user_level else agents.project_targets(project.resolve())
+    for target in targets:
+        outcome = target.remove()
+        if outcome:
+            typer.echo(f"  {outcome:<8} {target.path}")
+
+
+@agents_app.command("print")
+def agents_print(
+    skill: bool = typer.Option(False, "--skill", help="Print as a SKILL.md with frontmatter."),
+) -> None:
+    """Print the instructions, to paste into any agent's rules or knowledge settings."""
+    agents = _agents()
+    typer.echo(agents.skill_document() if skill else agents.instructions(), nl=False)
 
 
 @interpose_exec_app.command()
@@ -284,3 +729,7 @@ def interpose_exec(
     except SecretNotFound as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+
+
+if __name__ == "__main__":
+    app()

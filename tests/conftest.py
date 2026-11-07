@@ -21,3 +21,11 @@ def runtime_config(tmp_path, monkeypatch) -> RuntimeConfig:
 def runtime_container(runtime_config) :
     return create_container(runtime_config)
 
+
+
+@pytest.fixture(autouse=True)
+def _not_elevated(monkeypatch):
+    """CI runners (GitHub's Windows images) run as administrator, and `interpose run`
+    refuses to start an agent from an elevated shell. Tests model a normal user;
+    the refusal itself is covered by a test that turns elevation back on."""
+    monkeypatch.setattr("interpose.core.elevation.is_elevated", lambda: False)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,5 +72,96 @@ def load_master_key(master_key_file: Path) -> bytes:
         return _normalize_key_material(master_key_file.read_bytes())
 
     generated = os.urandom(32)
-    master_key_file.write_bytes(generated)
+    _write_private_file(master_key_file, generated)
     return _normalize_key_material(generated)
+
+
+def _write_private_file(path: Path, content: bytes) -> None:
+    """Create ``path`` readable by the current user only.
+
+    This keeps other accounts and inherited ACLs out. It does not stop a process
+    running as the same user, which is why the broker must eventually run under
+    its own OS identity.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        os.write(fd, content)
+    finally:
+        os.close(fd)
+    if os.name == "nt":
+        restrict_windows_acl(path)
+
+
+def _current_user_sid() -> str:
+    output = subprocess.run(
+        ["whoami", "/user", "/fo", "csv", "/nh"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    sid = output.rsplit(",", 1)[-1].strip().strip('"')
+    if not sid.startswith("S-1-"):
+        raise RuntimeError("could not determine the current user SID")
+    return sid
+
+
+def _set_single_ace_dacl(path: Path, sid: str) -> None:
+    """Replace the whole DACL of ``path`` with one protected entry: full control for ``sid``.
+
+    ``icacls /grant:r`` only replaces the grant for the named account; explicit
+    entries a creating process already put on the file (an elevated token adds
+    SYSTEM, Administrators and OWNER RIGHTS) survive it. Setting the DACL from a
+    security descriptor leaves nothing else behind.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32")
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
+    ]
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+    se_file_object = 1
+    dacl_security_information = 0x00000004
+    protected_dacl_security_information = 0x80000000
+    descriptor = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        f"D:P(A;;FA;;;{sid})", 1, ctypes.byref(descriptor), None
+    ):
+        raise OSError(ctypes.get_last_error(), "could not build the security descriptor")
+    try:
+        present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        if not advapi32.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
+        ):
+            raise OSError(ctypes.get_last_error(), "could not read the security descriptor")
+        result = advapi32.SetNamedSecurityInfoW(
+            str(path), se_file_object, dacl_security_information | protected_dacl_security_information,
+            None, None, dacl, None,
+        )
+        if result != 0:
+            raise OSError(result, f"could not set permissions on {path}")
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def restrict_windows_acl(path: Path) -> None:
+    """Make the current user the only account with any access to ``path``."""
+    try:
+        _set_single_ace_dacl(path, _current_user_sid())
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+        print(f"warning: could not restrict permissions on {path}: {exc}", file=sys.stderr)

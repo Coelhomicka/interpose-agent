@@ -1,3 +1,5 @@
+**English** | [Português (Brasil)](../pt-br/AGENT_CREDENTIALS.md)
+
 # Agent Credential Contract
 
 ## Purpose
@@ -21,6 +23,7 @@ When asked to configure a credential:
 9. Never replace `/proxy/{allowed-host}` with another destination to bypass policy.
 10. On `PolicyViolation`, report the reference, destination, method, scheme, and requested capability. Do not bypass the policy.
 11. If a library rejects references before reaching a broker, report an unsupported local-secret operation. Do not request the secret.
+12. Place references only where the credential belongs — normally the `Authorization` or `X-API-Key` header. Never put a reference in a request body, a message, a prompt, or any field an API stores or echoes. The broker denies those, and trying is a policy violation.
 
 ## Examples
 
@@ -35,6 +38,7 @@ Correct `.env`:
 ```dotenv
 API_KEY=secret://apichave/teste
 API_BASE=http://127.0.0.1:9876/proxy/api.exemplo.com
+# or, inside a registered project: http://127.0.0.1:9876/p/<project>/proxy/api.exemplo.com
 ```
 
 Incorrect `.env`:
@@ -54,6 +58,8 @@ assert os.environ["API_KEY"] == "secret://apichave/teste"
 ```
 
 ## IDE adapters
+
+`interpose agents install` writes a ready-to-use version of these rules, with how-to examples, into `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` and a Cursor rule; `interpose agents print` prints it for tools configured in a settings screen.
 
 Keep this contract as the source of truth and repeat its required behavior in the instruction surface supported by each agent, such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and Cursor workspace rules.
 
