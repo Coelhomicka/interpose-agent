@@ -1,3 +1,5 @@
+**English** | [Português (Brasil)](README.pt-br.md)
+
 # Interpose
 
 **Credential interposition for untrusted AI agents.**
@@ -460,7 +462,7 @@ is not loopback (DNS rebinding), and reject requests carrying a browser `Origin`
 - [Agent Credential Contract](docs/en/AGENT_CREDENTIALS.md) — the rules to give the agent
 - [Roadmap](docs/en/ROADMAP.md) — V2 enforced isolation through V5 agent integrations
 
-Also available in Portuguese (Brazil) — também disponível em português: [docs/pt-br](docs/README.md).
+Also available in Portuguese (Brazil): [README.pt-br.md](README.pt-br.md) and [docs/pt-br](docs/README.md).
 
 ## Contributing
 
