@@ -21,6 +21,7 @@ When asked to configure a credential:
 9. Never replace `/proxy/{allowed-host}` with another destination to bypass policy.
 10. On `PolicyViolation`, report the reference, destination, method, scheme, and requested capability. Do not bypass the policy.
 11. If a library rejects references before reaching a broker, report an unsupported local-secret operation. Do not request the secret.
+12. Place references only where the credential belongs — normally the `Authorization` or `X-API-Key` header. Never put a reference in a request body, a message, a prompt, or any field an API stores or echoes. The broker denies those, and trying is a policy violation.
 
 ## Examples
 

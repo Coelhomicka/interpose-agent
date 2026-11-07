@@ -6,3 +6,12 @@ allow:
 
 methods:
   - GET
+
+paths:
+  - /health
+
+# The example app sends the reference as ?secret=..., so that query field has to be
+# declared. Without an inject list, only the Authorization and X-API-Key headers are
+# accepted; a reference anywhere else is denied before it is resolved.
+inject:
+  - query: secret

@@ -64,6 +64,10 @@ operator's shell do not cross into the agent session, and it never passes
 | `core/references.py` | Parse and normalize `secret://provider/namespace/path`; discover references nested in arbitrary payloads |
 | `core/policies.py` | Policy documents, SQLite-backed repository, and the engine that decides allow/deny |
 | `core/substitution.py` | Replace references with resolved values across strings, mappings, and sequences |
+| `core/scopes.py` | Global and project scopes, and the resolution chain (project, then global) |
+| `projects.py` | Operator-controlled registry mapping folders to project scopes |
+| `dashboard/` | Local configuration dashboard served by `interpose up` |
+| `core/local_guard.py` | Loopback, `Host`, and browser-origin checks shared by the broker and admin API |
 | `core/redaction.py` | Register resolved values and strip them from responses, headers, and error text |
 | `core/audit.py` | Append-only SQLite record of references, destinations, decisions, and timings — never values |
 | `secrets/base.py` | The `SecretStore` protocol; the seam for external stores |
@@ -84,6 +88,8 @@ container against a temporary runtime home rather than patching globals.
 
 The broker's path for a single request, in order — the order *is* the security property:
 
+0. **Reject browser and rebound requests.** An `Origin` header, a cross-site `Sec-Fetch-Site`, or —
+   on the local transport — a non-loopback `Host` returns `403`.
 1. **Reject `CONNECT`.** Returns `501`. An opaque TLS tunnel cannot be inspected, so policy cannot
    be enforced on it and no guarantee is claimed.
 2. **Parse the destination.** `parse_local_transport_target()` derives the upstream authority from
@@ -93,8 +99,10 @@ The broker's path for a single request, in order — the order *is* the security
    decoding JSON and form encodings first, so a reference hidden inside a URL-encoded parameter is
    still found.
 4. **Evaluate policy — before resolution.** Every discovered reference is checked against its policy
-   for scheme, method, and destination host. Any denial returns `403`, writes an audit record, and
-   the secret is never decrypted.
+   for scheme, method, destination host, path, and *location*: the header, query field, form field,
+   or body it was found in. A location outside the policy's `inject` slots (default: the
+   `Authorization` and `X-API-Key` headers) is denied. Any denial returns `403`, writes an audit
+   record, and the secret is never decrypted.
 5. **Resolve and substitute.** Only now does the vault decrypt. Values are substituted into headers,
    query parameters, and the body according to content type, then re-encoded safely.
 6. **Register for redaction.** Every resolved value is added to the redaction engine before the
@@ -112,16 +120,23 @@ The broker's path for a single request, in order — the order *is* the security
 **References** are `secret://provider/namespace/path`, normalized to lowercase canonical form.
 Shorthand like `APIChave/teste` normalizes to `secret://apichave/teste`.
 
-**Storage.** Each record holds the AES-GCM ciphertext, its nonce, and a SHA-256 fingerprint of the
-plaintext. The fingerprint supports equality checks and audit correlation without retaining the
-value.
+**Storage.** Each record holds the AES-GCM ciphertext, its nonce, and an HMAC-SHA256 fingerprint of
+the plaintext keyed from the master key. The fingerprint supports equality checks and audit
+correlation without retaining the value, and — unlike a bare hash — cannot be used to test guesses
+offline.
 
 **Master key.** Read from `INTERPOSE_MASTER_KEY` when set, otherwise from `master.key` in the
 runtime home, generated with `os.urandom(32)` on first use. Either source is passed through SHA-256
 to produce the 32-byte key. The file currently relies on OS user permissions — the same-user
 limitation above applies directly here.
 
-**Policies** are stored one per secret reference, keyed uniquely. Adding a policy for an existing
+**Scopes.** Secrets and policies are keyed by `(scope, reference)`, where scope is `global` or
+`project:<id>`. Resolution walks the active chain — project first, then global — independently for
+the value and for the policy. Project ciphertexts use `scope|reference` as AES-GCM associated data;
+global ones keep the bare reference, so vaults from before scopes existed still decrypt and are
+migrated in place on open.
+
+**Policies** are stored one per secret reference and scope, keyed uniquely. Adding a policy for an existing
 reference replaces it. A reference with no policy is denied: the default is closed.
 
 **Audit records** are append-only and contain a reference, destination, action, decision, status,

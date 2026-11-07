@@ -26,6 +26,54 @@ class ExecutionPreparationError(RuntimeError):
 
 URL_RE = re.compile(r"https?://[^\s'\"`]+")
 
+# curl treats a bare ``host.tld/path`` argument as a URL. Anything shaped like one is
+# counted as a destination so it cannot ride along next to an allowed https:// URL.
+# Filenames such as ``out.json`` also match; that is a deliberate fail-closed choice.
+BARE_HOST_RE = re.compile(
+    r"^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:]+\]|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})"
+    r"(?::\d+)?(?:[/?#].*)?$"
+)
+
+# Options that add destinations, reroute traffic, or read extra arguments from a file,
+# all of which defeat inferring the destination from argv.
+_CURL_FORBIDDEN_LONG_OPTIONS = {
+    "--config",
+    "--next",
+    "--url",
+    "--proxy",
+    "--preproxy",
+    "--socks4",
+    "--socks4a",
+    "--socks5",
+    "--socks5-hostname",
+    "--resolve",
+    "--connect-to",
+    "--doh-url",
+    "--location",
+    "--location-trusted",
+    "--proxy-user",
+    "--variable",
+    "--expand-url",
+}
+_CURL_FORBIDDEN_SHORT_OPTIONS = {"K", "x", "L", "U", ":"}
+
+
+def _is_curl(command: Sequence[str]) -> bool:
+    return bool(command) and re.split(r"[\\/]", command[0])[-1].lower() in {"curl", "curl.exe"}
+
+
+def _forbidden_curl_option(command: Sequence[str]) -> str | None:
+    for token in command[1:]:
+        if token.startswith("--"):
+            name = token.split("=", 1)[0]
+            if name in _CURL_FORBIDDEN_LONG_OPTIONS:
+                return name
+        elif token.startswith("-") and len(token) > 1:
+            cluster = token[1:]
+            if cluster == ":" or (cluster.isalpha() and _CURL_FORBIDDEN_SHORT_OPTIONS & set(cluster)):
+                return token
+    return None
+
 
 def _infer_method(command: Sequence[str]) -> str:
     if not command:
@@ -44,25 +92,36 @@ def _infer_destinations(command: Sequence[str]) -> list[DestinationContext]:
     method = _infer_method(command)
     destinations: list[DestinationContext] = []
     seen: set[str] = set()
-    for token in command:
-        for match in URL_RE.finditer(token):
-            parsed = urlparse(match.group(0))
-            if not parsed.hostname:
-                continue
-            host = parsed.hostname
-            if parsed.port:
-                host = f"{host}:{parsed.port}"
-            key = f"{host}:{method}"
-            if key not in seen:
-                seen.add(key)
-                destinations.append(
-                    DestinationContext(
-                        host=host,
-                        method=method,
-                        scheme=parsed.scheme,
-                        url=parsed.geturl(),
-                    )
+
+    def add(url: str) -> None:
+        parsed = urlparse(url)
+        if not parsed.hostname:
+            return
+        host = parsed.hostname.lower()
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        key = f"{host}:{method}"
+        if key not in seen:
+            seen.add(key)
+            destinations.append(
+                DestinationContext(
+                    host=host,
+                    method=method,
+                    scheme=parsed.scheme,
+                    url=parsed.geturl(),
+                    path=parsed.path or "/",
                 )
+            )
+
+    curl = _is_curl(command)
+    for token in command[1:] if command else ():
+        matched_url = False
+        for match in URL_RE.finditer(token):
+            matched_url = True
+            add(match.group(0))
+        if curl and not matched_url and not token.startswith("-") and BARE_HOST_RE.match(token):
+            # curl defaults schemeless URLs to http; record that so policy sees it.
+            add(f"http://{token}")
     return destinations
 
 
@@ -91,7 +150,41 @@ class TrustedExecutor:
         start = time.perf_counter()
         resolved_agent = (agent or self.agent_name or "unknown").strip() or "unknown"
         references = collect_secret_references(command)
-        inferred_destinations = [destination] if destination else _infer_destinations(command)
+
+        def deny(reason: str, host: str) -> PolicyViolationError:
+            self.audit_logger.record(
+                session=session,
+                agent=resolved_agent,
+                secret_reference=",".join(reference.canonical for reference in references),
+                destination=host,
+                action="EXEC",
+                policy_result="deny",
+                status="blocked",
+                duration_ms=int((time.perf_counter() - start) * 1000),
+                details={"reason": reason},
+            )
+            return PolicyViolationError(reason)
+
+        if references:
+            # The subprocess will hold the plaintext, so the operator must opt each
+            # secret into this mode; a host allow-list alone does not imply it.
+            for reference in references:
+                if not self.policy_engine.allows_exec(reference):
+                    raise deny(f"{reference.canonical} does not permit interpose-exec (allow_exec: true)", "unknown")
+            if _is_curl(command):
+                forbidden = _forbidden_curl_option(command)
+                if forbidden:
+                    raise deny(f"curl option {forbidden} is not allowed with secret references", "unknown")
+
+        inferred_destinations = _infer_destinations(command)
+        if destination is not None:
+            stray = sorted({context.host for context in inferred_destinations} - {destination.host.lower()})
+            if references and stray:
+                raise deny(
+                    f"command addresses hosts other than the explicit destination: {', '.join(stray)}",
+                    ",".join(stray),
+                )
+            inferred_destinations = [destination]
 
         if references and not inferred_destinations:
             duration_ms = int((time.perf_counter() - start) * 1000)

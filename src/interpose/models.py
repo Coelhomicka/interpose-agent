@@ -55,6 +55,7 @@ class DestinationContext:
     method: str
     scheme: str = "https"
     url: str | None = None
+    path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class SecretMetadata:
     fingerprint: str
     created_at: datetime
     updated_at: datetime
+    scope: str = "global"
 
 
 @dataclass(frozen=True)
@@ -110,3 +112,4 @@ class PolicyRecord:
     definition: str
     created_at: datetime
     updated_at: datetime
+    scope: str = "global"

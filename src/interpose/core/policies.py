@@ -3,17 +3,19 @@ from __future__ import annotations
 import fnmatch
 import ipaddress
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..models import DestinationContext, PolicyDecision, PolicyRecord
 from .references import SecretReference, normalize_secret_reference
+from .scopes import GLOBAL_SCOPE, ScopeContext, validate_scope
 
 
 class PolicyError(ValueError):
@@ -24,12 +26,84 @@ class HostGroup(BaseModel):
     hosts: list[str] = Field(default_factory=list)
 
 
+INJECTION_KINDS = ("header", "query", "form")
+
+
+@dataclass(frozen=True)
+class RequestLocation:
+    """Where a reference was found in a request: ``kind`` plus the field name.
+
+    ``kind`` is one of ``header``, ``query``, ``form``, or ``body``. Body
+    occurrences carry no name and never match an injection slot.
+    """
+
+    kind: str
+    name: str | None = None
+
+    def matches(self, other: RequestLocation) -> bool:
+        if self.kind != other.kind or self.name is None or other.name is None:
+            return False
+        if self.kind == "header":
+            return self.name.lower() == other.name.lower()
+        return self.name == other.name
+
+    def describe(self) -> str:
+        return f"{self.kind} {self.name!r}" if self.name else self.kind
+
+
+# Applied when a policy does not declare ``inject``. Credentials normally travel in
+# these headers; anything else (bodies, query strings, arbitrary headers) is a
+# place the value could be echoed back or published, so it must be opted into.
+DEFAULT_INJECTION_SLOTS: tuple[RequestLocation, ...] = (
+    RequestLocation(kind="header", name="authorization"),
+    RequestLocation(kind="header", name="x-api-key"),
+)
+
+
+class InjectionSlot(BaseModel):
+    """One place in an outbound request where the broker may substitute this secret.
+
+    Exactly one of ``header``, ``query`` or ``form`` is set. Header names match
+    case-insensitively; query and form field names match exactly.
+    """
+
+    header: str | None = None
+    query: str | None = None
+    form: str | None = None
+
+    @model_validator(mode="after")
+    def validate_single_location(self) -> InjectionSlot:
+        populated = [kind for kind in INJECTION_KINDS if getattr(self, kind)]
+        if len(populated) != 1:
+            raise ValueError("an inject entry must set exactly one of: header, query, form")
+        return self
+
+    def location(self) -> RequestLocation:
+        for kind in INJECTION_KINDS:
+            name = getattr(self, kind)
+            if name:
+                return RequestLocation(kind=kind, name=name.strip())
+        raise AssertionError("unreachable: validated slot has no location")
+
+
 class PolicyDocument(BaseModel):
     secret: str = Field(min_length=1)
     allow: HostGroup | None = None
     deny: HostGroup | None = None
     methods: list[str] | None = None
     schemes: list[str] | None = None
+    paths: list[str] | None = None
+    inject: list[InjectionSlot] | None = None
+    allow_exec: bool = False
+
+    @field_validator("paths")
+    @classmethod
+    def validate_paths(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        if any(not value.startswith("/") for value in values):
+            raise ValueError("policy paths must start with '/'")
+        return values
 
     @field_validator("schemes")
     @classmethod
@@ -62,6 +136,11 @@ class PolicyDocument(BaseModel):
 
     def normalized_schemes(self) -> tuple[str, ...]:
         return tuple(self.schemes or [])
+
+    def injection_slots(self) -> tuple[RequestLocation, ...]:
+        if self.inject is None:
+            return DEFAULT_INJECTION_SLOTS
+        return tuple(slot.location() for slot in self.inject)
 
 
 def _is_loopback_destination(host: str) -> bool:
@@ -100,35 +179,61 @@ class SQLitePolicyRepository:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(policies)").fetchall()}
+            legacy = bool(columns) and "scope" not in columns
+            if legacy:
+                connection.execute("ALTER TABLE policies RENAME TO policies_unscoped")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS policies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    secret_reference TEXT NOT NULL UNIQUE,
+                    scope TEXT NOT NULL DEFAULT 'global',
+                    secret_reference TEXT NOT NULL,
                     definition TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (scope, secret_reference)
                 )
                 """
             )
-            connection.commit()
+            if legacy:
+                connection.execute(
+                    """
+                    INSERT INTO policies (id, scope, secret_reference, definition, created_at, updated_at)
+                    SELECT id, 'global', secret_reference, definition, created_at, updated_at
+                    FROM policies_unscoped
+                    """
+                )
+                connection.execute("DROP TABLE policies_unscoped")
 
-    def store(self, document: PolicyDocument) -> PolicyRecord:
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> PolicyRecord:
+        return PolicyRecord(
+            id=row["id"],
+            secret_reference=row["secret_reference"],
+            definition=row["definition"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+            scope=row["scope"],
+        )
+
+    def store(self, document: PolicyDocument, *, scope: str = GLOBAL_SCOPE) -> PolicyRecord:
+        scope = validate_scope(scope)
         now = datetime.now(UTC).isoformat()
         secret_reference = document.normalized_secret()
         definition = document.model_dump_json()
         with self._connect() as connection:
             existing = connection.execute(
-                "SELECT id, created_at FROM policies WHERE secret_reference = ?",
-                (secret_reference,),
+                "SELECT id, created_at FROM policies WHERE scope = ? AND secret_reference = ?",
+                (scope, secret_reference),
             ).fetchone()
             if existing is None:
                 cursor = connection.execute(
                     """
-                    INSERT INTO policies (secret_reference, definition, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO policies (scope, secret_reference, definition, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (secret_reference, definition, now, now),
+                    (scope, secret_reference, definition, now, now),
                 )
                 policy_id = int(cursor.lastrowid)
                 created_at = now
@@ -136,145 +241,145 @@ class SQLitePolicyRepository:
                 policy_id = int(existing["id"])
                 created_at = existing["created_at"]
                 connection.execute(
-                    """
-                    UPDATE policies
-                    SET definition = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
+                    "UPDATE policies SET definition = ?, updated_at = ? WHERE id = ?",
                     (definition, now, policy_id),
                 )
-            connection.commit()
         return PolicyRecord(
             id=policy_id,
             secret_reference=secret_reference,
             definition=definition,
             created_at=datetime.fromisoformat(created_at),
             updated_at=datetime.fromisoformat(now),
+            scope=scope,
         )
 
-    def list(self) -> list[PolicyRecord]:
+    def list(self, scope: str | None = None) -> list[PolicyRecord]:
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM policies ORDER BY id ASC").fetchall()
-        return [
-            PolicyRecord(
-                id=row["id"],
-                secret_reference=row["secret_reference"],
-                definition=row["definition"],
-                created_at=datetime.fromisoformat(row["created_at"]),
-                updated_at=datetime.fromisoformat(row["updated_at"]),
-            )
-            for row in rows
-        ]
+            if scope is None:
+                rows = connection.execute("SELECT * FROM policies ORDER BY id ASC").fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM policies WHERE scope = ? ORDER BY id ASC",
+                    (validate_scope(scope),),
+                ).fetchall()
+        return [self._from_row(row) for row in rows]
 
     def get(self, policy_id: int) -> PolicyRecord | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM policies WHERE id = ?", (policy_id,)).fetchone()
-        if row is None:
-            return None
-        return PolicyRecord(
-            id=row["id"],
-            secret_reference=row["secret_reference"],
-            definition=row["definition"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
+        return self._from_row(row) if row else None
 
-    def get_by_secret(self, secret_reference: str) -> PolicyRecord | None:
+    def get_by_secret(
+        self,
+        secret_reference: str,
+        *,
+        scopes: Iterable[str] = (GLOBAL_SCOPE,),
+    ) -> PolicyRecord | None:
+        """The first policy for ``secret_reference`` along the scope chain."""
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM policies WHERE secret_reference = ?",
-                (secret_reference,),
-            ).fetchone()
-        if row is None:
-            return None
-        return PolicyRecord(
-            id=row["id"],
-            secret_reference=row["secret_reference"],
-            definition=row["definition"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
+            for scope in scopes:
+                row = connection.execute(
+                    "SELECT * FROM policies WHERE scope = ? AND secret_reference = ?",
+                    (scope, secret_reference),
+                ).fetchone()
+                if row is not None:
+                    return self._from_row(row)
+        return None
 
     def delete(self, policy_id: int) -> bool:
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM policies WHERE id = ?", (policy_id,))
-            connection.commit()
             return cursor.rowcount > 0
 
 
 class PolicyEngine:
-    def __init__(self, repository: SQLitePolicyRepository) -> None:
+    """Evaluates the policy in effect for a reference along the scope chain.
+
+    A project policy shadows the global one for the same reference, so an operator
+    can narrow (or widen) how a shared secret may be used inside one project.
+    """
+
+    def __init__(self, repository: SQLitePolicyRepository, context: ScopeContext | None = None) -> None:
         self._repository = repository
+        self._context = context or ScopeContext()
 
-    def evaluate(self, secret_reference: SecretReference, destination: DestinationContext) -> PolicyDecision:
-        record = self._repository.get_by_secret(secret_reference.canonical)
+    def effective_policy(self, secret_reference: SecretReference) -> PolicyRecord | None:
+        return self._repository.get_by_secret(secret_reference.canonical, scopes=self._context.chain())
+
+    def _document(self, secret_reference: SecretReference) -> PolicyDocument | None:
+        record = self.effective_policy(secret_reference)
         if record is None:
-            return PolicyDecision(
-                allowed=False,
-                reason="No policy registered for secret reference",
-                secret_reference=secret_reference.canonical,
-                destination=destination.host,
-                method=destination.method,
-            )
+            return None
+        return PolicyDocument.from_yaml(record.definition)
 
-        document = PolicyDocument.from_yaml(record.definition)
+    @staticmethod
+    def _deny(secret_reference: SecretReference, destination: DestinationContext, reason: str) -> PolicyDecision:
+        return PolicyDecision(
+            allowed=False,
+            reason=reason,
+            secret_reference=secret_reference.canonical,
+            destination=destination.host,
+            method=destination.method.upper(),
+        )
+
+    def evaluate(
+        self,
+        secret_reference: SecretReference,
+        destination: DestinationContext,
+        *,
+        location: RequestLocation | None = None,
+    ) -> PolicyDecision:
+        """Decide whether ``secret_reference`` may be resolved for ``destination``.
+
+        When ``location`` is given, the reference must also sit in one of the
+        policy's injection slots. A reference anywhere else is denied: a body or an
+        arbitrary field is a place an allowed host can echo or publish the value.
+        """
+        document = self._document(secret_reference)
+        if document is None:
+            return self._deny(secret_reference, destination, "No policy registered for secret reference")
+
         requested_method = destination.method.upper()
         requested_scheme = destination.scheme.lower()
         allowed_schemes = document.normalized_schemes()
         if allowed_schemes and requested_scheme not in allowed_schemes:
-            return PolicyDecision(
-                allowed=False,
-                reason=f"scheme {requested_scheme} is not allowed",
-                secret_reference=secret_reference.canonical,
-                destination=destination.host,
-                method=requested_method,
-            )
+            return self._deny(secret_reference, destination, f"scheme {requested_scheme} is not allowed")
         if not allowed_schemes and requested_scheme != "https" and not _is_loopback_destination(destination.host):
-            return PolicyDecision(
-                allowed=False,
-                reason="insecure HTTP requires an explicit policy scheme",
-                secret_reference=secret_reference.canonical,
-                destination=destination.host,
-                method=requested_method,
-            )
-        allowed_methods = document.normalized_methods()
-        if allowed_methods and requested_method not in allowed_methods:
-            return PolicyDecision(
-                allowed=False,
-                reason=f"method {requested_method} is not allowed",
-                secret_reference=secret_reference.canonical,
-                destination=destination.host,
-                method=requested_method,
-            )
+            return self._deny(secret_reference, destination, "insecure HTTP requires an explicit policy scheme")
 
+        allowed_methods = document.normalized_methods()
+        if requested_method == "EXEC" and "EXEC" not in allowed_methods:
+            # Handing the plaintext to an arbitrary executable is never implied by an
+            # empty method list; the operator has to name it.
+            return self._deny(secret_reference, destination, "method EXEC must be listed explicitly")
+        if allowed_methods and requested_method not in allowed_methods:
+            return self._deny(secret_reference, destination, f"method {requested_method} is not allowed")
+
+        host = destination.host.lower()
         deny_hosts = [pattern.lower() for pattern in document.deny.hosts] if document.deny else []
         for pattern in deny_hosts:
-            if fnmatch.fnmatch(destination.host, pattern):
-                return PolicyDecision(
-                    allowed=False,
-                    reason=f"destination {destination.host} denied by pattern {pattern}",
-                    secret_reference=secret_reference.canonical,
-                    destination=destination.host,
-                    method=requested_method,
+            if fnmatch.fnmatchcase(host, pattern):
+                return self._deny(
+                    secret_reference, destination, f"destination {destination.host} denied by pattern {pattern}"
                 )
 
         allow_hosts = [pattern.lower() for pattern in document.allow.hosts] if document.allow else []
         if not allow_hosts:
-            return PolicyDecision(
-                allowed=False,
-                reason="policy does not define any allowed hosts",
-                secret_reference=secret_reference.canonical,
-                destination=destination.host,
-                method=requested_method,
-            )
+            return self._deny(secret_reference, destination, "policy does not define any allowed hosts")
+        if not any(fnmatch.fnmatchcase(host, pattern) for pattern in allow_hosts):
+            return self._deny(secret_reference, destination, f"destination {destination.host} is not in allow list")
 
-        if not any(fnmatch.fnmatch(destination.host, pattern) for pattern in allow_hosts):
-            return PolicyDecision(
-                allowed=False,
-                reason=f"destination {destination.host} is not in allow list",
-                secret_reference=secret_reference.canonical,
-                destination=destination.host,
-                method=requested_method,
+        if document.paths is not None:
+            requested_path = destination.path or "/"
+            if not any(fnmatch.fnmatchcase(requested_path, pattern) for pattern in document.paths):
+                return self._deny(secret_reference, destination, f"path {requested_path} is not in allow list")
+
+        if location is not None and not any(slot.matches(location) for slot in document.injection_slots()):
+            return self._deny(
+                secret_reference,
+                destination,
+                f"reference is not allowed in {location.describe()}; "
+                "declare an inject slot in the policy to permit it",
             )
 
         return PolicyDecision(
@@ -284,3 +389,7 @@ class PolicyEngine:
             destination=destination.host,
             method=requested_method,
         )
+
+    def allows_exec(self, secret_reference: SecretReference) -> bool:
+        document = self._document(secret_reference)
+        return bool(document and document.allow_exec)

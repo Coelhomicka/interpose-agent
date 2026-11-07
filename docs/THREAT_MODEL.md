@@ -12,11 +12,15 @@ The preferred model is reference-only execution: untrusted processes receive `se
 | --- | --- | --- |
 | Prompt injection | Partially Protected | References remain opaque, but an injected agent can attempt unsupported operations or direct egress. |
 | Malicious generated code | Partially Protected | The launcher supplies references only. Same-user filesystem and network isolation are not enforced yet. |
-| Secret exfiltration through an allowed HTTP target | Partially Protected | Host and method policies are checked before resolution. Fine-grained path/body policy is future work. |
+| Secret exfiltration through an allowed HTTP target | Partially Protected | Host, method, path, and injection-slot policies are checked before resolution. A reference in the body or an undeclared header/field is denied, so an allowed API cannot be used to publish or echo it. An allowed slot on an endpoint that reflects it remains a residual risk; narrow `paths`. |
 | Inherited environment credentials | Protected in managed sessions | The launcher builds the child environment from an allowlist and injects only declared references. |
 | Environment inspection | Protected in managed sessions | Inspection reveals references. Processes launched outside `interpose run` are out of scope. |
-| Filesystem inspection | Not Protected Yet | A same-user process may read the local database and master-key file. Run the daemon under a separate OS identity in production. |
-| Runtime administrative API access | Not Protected Yet | The local API has no authentication. It must remain on loopback and outside the agent session. |
+| Filesystem inspection | Not Protected Yet | A generated `master.key` is restricted to the current user (no inherited ACEs on Windows, mode 0600 elsewhere), which keeps other accounts out. A same-user process may still read the database and the key file. Run the daemon under a separate OS identity in production. |
+| Runtime administrative API access | Partially Protected | Requires a per-start bearer token that is printed to the operator's terminal and never persisted. A same-user process that can read the operator's terminal or the API's memory can still obtain it. |
+| Dashboard access | Partially Protected | Single-use login link exchanged for an `HttpOnly`, `SameSite=Strict` cookie; loopback `Host` and same-origin checks; per-session CSRF token on every change; strict CSP; values are write-only. A same-user process that reads the terminal before the operator opens the link, or that drives the operator's logged-in browser, can act as the operator. |
+| Cross-project secret access | Protected in managed sessions | The active project comes from the operator's registry, not from workspace files. Project ciphertexts are bound to their scope by AES-GCM associated data. |
+| Partial reflection by an upstream | Not Protected | Some APIs echo a masked key in errors (`sk_test_****abcd`). Exact-match redaction does not catch partial echoes, so a few characters can reach the agent. |
+| Browser-driven access to loopback listeners | Protected | The broker and API reject requests with an `Origin` header or a cross-site `Sec-Fetch-Site`, and reject non-loopback `Host` headers, blocking CSRF and DNS rebinding from web pages. |
 | `/proc` or process inspection | Partially Protected | Reference-only sessions contain no secret arguments. `interpose-exec` may expose resolved arguments. |
 | Process memory inspection | Not Protected Yet | Same-user isolation between the broker and agent is not enforced. |
 | Direct network exfiltration | Not Protected Yet | The explicit local transport does not prevent an agent from opening direct sockets. OS egress enforcement remains mandatory. |
@@ -24,10 +28,12 @@ The preferred model is reference-only execution: untrusted processes receive `se
 | HTTPS traffic | Not Protected Yet | `CONNECT` is rejected because an opaque TLS tunnel cannot substitute references safely. |
 | HTTP redirects | Protected | Automatic upstream redirects are disabled. |
 | URL-encoded references | Protected for query/form HTTP | The broker decodes references, evaluates policy, resolves, and safely re-encodes values. |
+| Fingerprint guessing | Protected | Fingerprints are HMAC-SHA256 under a key derived from the master key, so a listed fingerprint is not an offline oracle for low-entropy secrets. Legacy SHA-256 fingerprints are rewritten on open. |
+| `interpose-exec` destination bypass | Partially Protected | Requires `allow_exec: true` per secret and an explicit `EXEC` method for non-curl commands; counts schemeless curl hosts and refuses rerouting curl options. Argv inference remains a heuristic. |
 | Logs and audit | Protected for known resolved values | Resolved values and resolved URLs are redacted; audit records contain references and metadata only. |
 | Audit attribution | Not Protected Yet | The broker has no client authentication on loopback, so it cannot verify which process sent a request. Records are reliable about what happened, not about who did it. |
 | Tracebacks | Partially Protected | Broker errors are redacted. Untrusted application tracebacks contain references only in managed sessions. |
-| Response reflection | Partially Protected | Known resolved values are redacted in headers and bodies. Encoded or transformed reflections may evade exact redaction. |
+| Response reflection | Partially Protected | Known resolved values are redacted in headers and bodies, including non-UTF-8 binary bodies. Encoded or transformed reflections may evade exact redaction; injection slots keep references out of bodies that an upstream would transform. |
 | DNS exfiltration | Not Protected Yet | DNS is not controlled at the OS layer. |
 | Certificate pinning | Not Protected Yet | Future transparent TLS termination will not work for pinned clients without explicit integration. |
 | Local cryptographic use | Future | Signing, mTLS, SSH, and SigV4 require operation brokers; returning key material is prohibited. |
@@ -37,13 +43,14 @@ The preferred model is reference-only execution: untrusted processes receive `se
 The current implementation guarantees that:
 
 1. no public API or CLI operation returns a stored secret value;
-2. broker policies are evaluated before secret resolution;
+2. broker policies — host, method, scheme, path, and injection slot — are evaluated before secret resolution;
 3. managed child environments contain declared references rather than resolved values;
 4. the launcher does not pass `INTERPOSE_MASTER_KEY` or `INTERPOSE_HOME` to children;
 5. local secret storage uses authenticated encryption;
 6. audit records do not intentionally persist plaintext secrets;
 7. HTTP `CONNECT` is rejected instead of creating a false transparent-HTTPS guarantee.
-8. the explicit local transport derives the destination from `/proxy/{host}` and defaults external traffic to HTTPS.
+8. the explicit local transport derives the destination from `/proxy/{host}` and defaults external traffic to HTTPS;
+9. loopback listeners refuse browser-originated and DNS-rebound requests, and the admin API requires a token.
 
 ## Non-Guarantees
 
