@@ -62,7 +62,53 @@ python -m pip install -e ".[dev]"
 Runtime state lives in `~/.interpose` (`%USERPROFILE%\.interpose` on Windows). Keep the
 administrative shell, the database, and the master key outside the agent's workspace.
 
-## Quickstart
+## Quickstart: the dashboard
+
+From your project folder:
+
+```bash
+interpose up
+```
+
+```text
+  Interpose
+  Project:    my-app (C:\code\my-app)
+  Proxy:      http://127.0.0.1:9876
+  Dashboard:  http://127.0.0.1:18888/login?t=…
+              (single-use login link; restart for a new one)
+```
+
+This starts the broker and a local dashboard in one process and opens the dashboard in your
+browser, in the style of the .NET Aspire dashboard. From there you can:
+
+- **register the folder as a project** — its secrets and policies apply only when the runtime runs
+  there;
+- **add secrets** to the project or to the global scope. Values are write-only: they are encrypted
+  on submit and no screen or endpoint ever returns them;
+- **write policies** with a form — hosts, methods, paths, and where the credential may appear —
+  with a live YAML preview;
+- **watch activity** live: every allowed and denied request, with the reason and the location of the
+  reference;
+- **copy a `.env` and `session.yaml`** for the agent, built from what is configured.
+
+### Project and global scopes
+
+The same reference can mean different values in different places. Inside a registered project,
+`secret://openai/prod` resolves to the project's value if there is one, and to the global value
+otherwise. Policies follow the same chain, so a project policy can narrow — or widen — how a shared
+global secret may be used in that project only.
+
+Which project is active comes from the registry the operator manages in the dashboard, never from a
+file in the repository. An agent that edits the workspace cannot point its session at another
+project's secrets. Project ciphertexts are also bound to their scope through AES-GCM associated
+data, so moving a row between scopes in the database makes it fail to decrypt instead of resolving
+in the wrong place.
+
+The dashboard login link works once and becomes an `HttpOnly`, `SameSite=Strict` session cookie.
+The dashboard rejects non-loopback `Host` headers and cross-origin requests, requires a per-session
+CSRF token for every change, and serves a strict Content Security Policy.
+
+## Quickstart: the CLI
 
 **1. Store a secret** through a hidden prompt — the value is never echoed or passed as an argument:
 
@@ -85,7 +131,24 @@ allow:
 methods:
   - GET
   - POST
+
+# Optional: restrict which upstream paths may use the credential.
+paths:
+  - /v1/*
+
+# Optional: where in the request the reference may appear. When omitted, only the
+# Authorization and X-API-Key headers are accepted.
+inject:
+  - header: Authorization
 ```
+
+**Where a reference may appear is part of the policy.** The broker records where each reference sits
+in a request — which header, which query or form field, or the body — and denies any occurrence
+outside the policy's `inject` slots *before* resolving it. Without this, an allowed host becomes an
+exfiltration channel: a reference placed in the body of a `POST api.github.com/gists` would be
+published by the very API it authenticates, and one placed in a chat message could be echoed back
+in a transformed form that exact-match redaction cannot catch. Use `query: key` or `form: token`
+entries for APIs that take the credential there.
 
 ```bash
 interpose policy add openai-policy.yaml
@@ -261,9 +324,22 @@ interpose-exec --agent codex curl "https://api.github.com/user" \
   -H "Authorization: Bearer secret://github/prod"
 ```
 
-The subprocess therefore **possesses** the plaintext. This mode exists for compatibility with tools
-the broker cannot mediate; it is not suitable for arbitrary or agent-generated executables. Prefer
-the broker, where the secret never enters the child process.
+The subprocess therefore **possesses** the plaintext — and the resolved arguments are visible in the
+process list. This mode exists for compatibility with tools the broker cannot mediate; it is not
+suitable for arbitrary or agent-generated executables. Prefer the broker, where the secret never
+enters the child process.
+
+Because of that, it is **off unless the policy opts in** with `allow_exec: true`. Even then:
+
+- running anything other than `curl` is method `EXEC`, which must be listed in `methods`
+  explicitly — an empty method list does not imply it;
+- schemeless `curl` targets such as `evil.example/path` count as destinations, so they cannot ride
+  along next to an allowed `https://` URL;
+- `curl` options that reroute traffic or read arguments from elsewhere (`-K/--config`, `--next`,
+  `-x/--proxy`, `--resolve`, `--connect-to`, `-L/--location`, and similar) are refused;
+- an explicit `--destination` is refused if the command also addresses another host.
+
+Destination inference from argv is a heuristic. Treat `allow_exec` as accepting that risk.
 
 ## Administrative API
 
@@ -273,8 +349,15 @@ interpose api --host 127.0.0.1 --port 8000
 
 `GET /health` · `GET|POST /secrets` · `DELETE /secrets/{id}` · `GET|POST /policies` · `GET /audit`
 
-No endpoint returns a secret value. The API has no authentication yet, so it must stay on loopback,
-in a trusted session, outside the agent's reach.
+No endpoint returns a secret value. On start, the API prints a one-time admin token to the
+operator's terminal; every route except `/health` requires `Authorization: Bearer <token>`. The
+token is held only in memory and never written to disk, where an agent running as the same user
+could read it. Without it, any local process could register a policy allowing its own host and
+then spend the secret through the broker.
+
+Both the API and the broker refuse to bind to a non-loopback address, reject requests whose `Host`
+is not loopback (DNS rebinding), and reject requests carrying a browser `Origin` or a cross-site
+`Sec-Fetch-Site` header, so a web page cannot drive them.
 
 ## Documentation
 

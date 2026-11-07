@@ -12,6 +12,53 @@ Entries that change a security guarantee are marked **[security]**.
 
 ### Added
 
+- `interpose up`: starts the broker and a local configuration dashboard together and opens the
+  dashboard with a single-use login link, in the style of the .NET Aspire dashboard. The dashboard
+  manages secrets (write-only), policies (form with live YAML preview), project registration, and
+  shows live activity and ready-to-copy `.env` and `session.yaml` snippets.
+- Project and global scopes for secrets and policies. Inside a registered project, a reference
+  resolves to the project's value first and the global value otherwise; policies follow the same
+  chain. Existing vaults migrate in place, with every record becoming global.
+- `interpose proxy` and `interpose run` use the registered project containing the current folder.
+
+### Security
+
+- **[security]** Policies now control *where* a reference may appear. The broker records the header,
+  query field, form field, or body each reference sits in and denies any location outside the
+  policy's new `inject` slots before resolution. The default, when `inject` is omitted, is the
+  `Authorization` and `X-API-Key` headers. Previously a reference in a request body to an allowed
+  host was substituted, letting the allowed API itself publish or echo the secret.
+  **Breaking:** policies for APIs that take the credential in a query or form field must declare it,
+  e.g. `inject: [{query: key}]`.
+- **[security]** Policies accept an optional `paths` allow-list matched against the upstream path.
+- **[security]** The broker and admin API reject requests carrying an `Origin` header or a
+  cross-site `Sec-Fetch-Site`, and requests whose `Host` is not loopback. Web pages could previously
+  drive the broker with preflight-free form and `text/plain` requests, or read responses through DNS
+  rebinding.
+- **[security]** The admin API requires a bearer token generated at start, printed once to the
+  operator's terminal, and never persisted. Its OpenAPI and docs routes are disabled. Previously any
+  local process could register a policy granting its own destination. `interpose api` and
+  `interpose proxy` refuse non-loopback bind addresses.
+- **[security]** `interpose-exec` now requires `allow_exec: true` in the policy of every reference
+  it resolves; non-curl commands require `EXEC` to be listed in `methods` explicitly; schemeless curl
+  targets count as destinations; curl options that reroute traffic (`-K`, `--next`, `-x`,
+  `--resolve`, `--connect-to`, `-L`, ...) are refused; and an explicit `--destination` is refused
+  when the command addresses another host.
+- **[security]** Secret fingerprints are HMAC-SHA256 keyed from the master key instead of a bare
+  SHA-256 of the plaintext, which was an offline guessing oracle for low-entropy secrets. Existing
+  fingerprints are migrated when the vault is opened.
+- **[security]** A newly generated `master.key` is created with owner-only permissions: mode 0600,
+  or on Windows an ACL with inheritance removed and full control for the current user alone.
+- **[security]** Binary response bodies are redacted at the byte level; a single invalid UTF-8 byte
+  previously caused the whole body to pass through unredacted.
+
+### Fixed
+
+- The broker no longer forwards the upstream `Content-Encoding` header after `httpx` has already
+  decoded the body, which made clients fail to decompress a plain payload.
+
+### Added
+
 - Apache-2.0 license, `NOTICE`, contribution guide, code of conduct, and security policy with a
   scope statement distinguishing vulnerabilities from documented non-guarantees.
 - `docs/ARCHITECTURE.md` describing components, the request lifecycle, and the trust boundary.

@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import socket
+import webbrowser
 from pathlib import Path
 
 import typer
 import uvicorn
 
-from ..api.app import create_app
+from ..api.app import create_app, generate_admin_token
 from ..container import create_container
+from ..core.local_guard import require_loopback_bind
 from ..core.policies import PolicyDocument, PolicyError
 from ..core.references import SecretReferenceError, normalize_secret_reference
 from ..executor.trusted_executor import ExecutionPreparationError, PolicyViolationError
 from ..proxy.http_proxy import create_proxy_app
-from ..secrets.base import SecretNotFound
+from ..secrets.base import SecretNotFound, SecretValueError
 from ..session.dotenv import DotenvValidationError, validate_dotenv
 from ..session.isolation.base import IsolationError
 from ..session.isolation.factory import create_isolation_backend
@@ -39,7 +44,9 @@ app.add_typer(isolation_app, name="isolation")
 
 
 def _container():
-    return create_container()
+    # The registered project containing the current folder, if any, becomes the
+    # active scope: its secrets and policies resolve before the global ones.
+    return create_container(project_root=Path.cwd())
 
 
 @secret_app.command("add")
@@ -51,6 +58,9 @@ def secret_add(reference: str) -> None:
         metadata = container.secret_store.store(normalized_reference, secret_value)
     except SecretReferenceError as exc:
         typer.echo(f"Invalid secret reference: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except SecretValueError as exc:
+        typer.echo(f"Invalid secret value: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo("Secret stored:")
     typer.echo(metadata.reference)
@@ -237,14 +247,97 @@ def run_session(
     raise typer.Exit(code=return_code)
 
 
+def _loopback_or_exit(host: str) -> None:
+    try:
+        require_loopback_bind(host)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
 @app.command("api")
 def run_api(host: str = "127.0.0.1", port: int = 8000) -> None:
-    uvicorn.run(create_app(), host=host, port=port, log_level="info")
+    _loopback_or_exit(host)
+    token = generate_admin_token()
+    # Shown once, on the operator's terminal only. It is not persisted anywhere an
+    # agent running as the same user could read it back.
+    typer.echo(f"Admin API token (send as 'Authorization: Bearer <token>'): {token}", err=True)
+    uvicorn.run(create_app(admin_token=token), host=host, port=port, log_level="info")
 
 
 @app.command("proxy")
 def run_proxy(host: str = "127.0.0.1", port: int = 9876) -> None:
-    uvicorn.run(create_proxy_app(), host=host, port=port, log_level="info")
+    _loopback_or_exit(host)
+    uvicorn.run(create_proxy_app(_container()), host=host, port=port, log_level="info")
+
+
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+@app.command("up")
+def up(
+    project_dir: Path = typer.Option(Path("."), "--project-dir", exists=True, file_okay=False,
+                                     help="Folder whose project scope is active."),
+    proxy_port: int = typer.Option(9876, help="Broker port agents connect to."),
+    dashboard_port: int = typer.Option(18888, help="Dashboard port; a free one is chosen if taken."),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the dashboard in the browser."),
+) -> None:
+    """Start the broker and the configuration dashboard together, like `aspire run`."""
+    from ..dashboard.app import DashboardAuth, DashboardContext, create_dashboard_app
+
+    working_directory = project_dir.resolve()
+    container = create_container(project_root=working_directory)
+    if not _port_is_free(proxy_port):
+        typer.echo(f"Port {proxy_port} is in use; pass --proxy-port to choose another.", err=True)
+        raise typer.Exit(code=1)
+    if not _port_is_free(dashboard_port):
+        dashboard_port = _free_port()
+
+    proxy_url = f"http://127.0.0.1:{proxy_port}"
+    auth = DashboardAuth()
+    dashboard = create_dashboard_app(container, DashboardContext(working_directory, proxy_url), auth)
+    login_url = f"http://127.0.0.1:{dashboard_port}/login?t={auth.login_token}"
+
+    project = container.project
+    typer.echo("")
+    typer.secho("  Interpose", bold=True)
+    typer.echo(f"  Project:    {project.name} ({project.root})" if project else
+               f"  Project:    none - global scope only ({working_directory})")
+    typer.echo(f"  Proxy:      {proxy_url}")
+    typer.echo(f"  Dashboard:  {login_url}")
+    typer.echo("              (single-use login link; restart for a new one)")
+    typer.echo("")
+    typer.echo("  Press Ctrl+C to stop.", err=True)
+
+    servers = [
+        uvicorn.Server(uvicorn.Config(create_proxy_app(container), host="127.0.0.1", port=proxy_port,
+                                      log_level="warning")),
+        uvicorn.Server(uvicorn.Config(dashboard, host="127.0.0.1", port=dashboard_port, log_level="warning")),
+    ]
+
+    async def serve() -> None:
+        async def open_when_ready() -> None:
+            while not servers[1].started:
+                await asyncio.sleep(0.05)
+            if open_browser:
+                webbrowser.open(login_url)
+
+        await asyncio.gather(*(server.serve() for server in servers), open_when_ready())
+
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(serve())
 
 
 @interpose_exec_app.command()
@@ -284,3 +377,7 @@ def interpose_exec(
     except SecretNotFound as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+
+
+if __name__ == "__main__":
+    app()
