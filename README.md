@@ -241,9 +241,10 @@ interpose proxy --host 127.0.0.1 --port 9876
 interpose run --profile session.yaml -- claude
 ```
 
-The child process receives `OPENAI_API_KEY=secret://openai/prod`. Credentials inherited from your
-own shell are stripped — the environment is rebuilt from an allowlist — and the launcher never
-passes `INTERPOSE_MASTER_KEY` or `INTERPOSE_HOME` to the child.
+The child process receives `OPENAI_API_KEY=secret://openai/prod`, plus `INTERPOSE_PROXY` with the
+broker address for the current project. Credentials inherited from your own shell are stripped — the
+environment is rebuilt from an allowlist — and the launcher never passes `INTERPOSE_MASTER_KEY` or
+`INTERPOSE_HOME` to the child. Run it from a normal terminal: it refuses an administrator one.
 
 The launcher does not care what it is starting — it passes the command through unchanged:
 
@@ -356,8 +357,12 @@ and a user-presence check on the dashboard are not done yet, and they are the di
 Guaranteed today:
 
 - no API or CLI operation returns a stored secret value;
-- with the Windows service installed, the vault and master key are unreadable by your account and
-  the service runs code your account cannot modify;
+- with the Windows service installed, the vault and master key are unreadable by your account, the
+  service's memory cannot be opened by your processes, and the service runs code your account cannot
+  modify;
+- `interpose run` refuses to start an agent from an administrator shell (an elevated agent defeats
+  every boundary), unless you pass `--allow-elevated`;
+- `interpose-exec` never puts a resolved secret on a command line;
 - policy is evaluated before resolution;
 - managed child environments contain references, not values;
 - storage uses AES-GCM authenticated encryption;
@@ -374,7 +379,8 @@ Guaranteed today:
   the next step;
 - **denial of direct network egress** — nothing stops an agent from opening its own socket and
   bypassing the broker. OS-level egress control is mandatory for a real threat model;
-- protection against process-memory, DNS, or covert-channel attacks;
+- protection against processes running as administrator or SYSTEM;
+- protection against DNS or covert-channel exfiltration;
 - compatibility with SDKs that validate token *format* locally before any request is made;
 - attribution of a broker request to a specific agent — see below.
 
