@@ -5,6 +5,8 @@
 **Credential interposition for untrusted AI agents.**
 
 [![CI](https://github.com/Coelhomicka/interpose-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Coelhomicka/interpose-agent/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Coelhomicka/interpose-agent/actions/workflows/codeql.yml/badge.svg)](https://github.com/Coelhomicka/interpose-agent/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Coelhomicka/interpose-agent/badge)](https://scorecard.dev/viewer/?uri=github.com/Coelhomicka/interpose-agent)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)

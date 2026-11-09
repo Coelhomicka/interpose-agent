@@ -18,7 +18,7 @@ saves a round trip.
 
 ```bash
 git clone https://github.com/Coelhomicka/interpose-agent.git
-cd interpose
+cd interpose-agent
 
 python -m venv .venv
 source .venv/bin/activate       # Windows: .\.venv\Scripts\Activate.ps1
@@ -41,6 +41,24 @@ test that needs runtime state, use that fixture rather than constructing paths y
 
 Windows AppContainer tests are skipped on other platforms and some need an elevated shell. A skip is
 expected, not a failure.
+
+### Changing dependencies
+
+`interpose setup` installs the service runtime as administrator, so its dependencies come from a
+lock with sha256 hashes: `src/interpose/service/requirements.lock`. After changing `dependencies`
+in `pyproject.toml`, regenerate it (a test fails until you do):
+
+```bash
+python -m pip install pip-tools
+pip-compile --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url   --output-file src/interpose/service/requirements.lock   pyproject.toml src/interpose/service/build-requirements.in
+```
+
+Run it on Windows: the lock serves the Windows service and resolves Windows-only markers.
+
+### Branch protection
+
+`main` only changes through pull requests that pass CI and CodeQL. Actions in workflows are
+pinned to commit SHAs with the version in a comment; Dependabot keeps both up to date.
 
 ## Where help is most valuable
 

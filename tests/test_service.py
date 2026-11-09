@@ -405,3 +405,39 @@ def test_start_stop_right_is_added_once(sddl, expected):
 
     assert once == expected
     assert installer.with_start_stop_ace(once, "S-1-5-21-1") == once
+
+
+def test_service_runtime_installs_only_hash_checked_packages(tmp_path):
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("x==1 --hash=sha256:00\n", encoding="utf-8")
+
+    deps, package = installer.runtime_install_commands("py", "git+https://example/repo@abc", lock)
+
+    assert {"--require-hashes", "--no-deps", "--only-binary"} <= set(deps)
+    assert deps[deps.index("-r") + 1] == str(lock)
+    assert {"--no-deps", "--no-build-isolation"} <= set(package)
+    assert package[-1] == "git+https://example/repo@abc"
+
+
+def test_service_lock_pins_every_runtime_dependency():
+    """Changing dependencies in pyproject.toml without re-running pip-compile fails here."""
+    import tomllib
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    root = Path(__file__).resolve().parents[1]
+    declared = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    pinned = {}
+    for line in installer.SERVICE_LOCK.read_text(encoding="utf-8").splitlines():
+        if "==" in line and not line.startswith((" ", "#")):
+            name, version = line.split(" ")[0].split("==")
+            pinned[canonicalize_name(name)] = version
+    for spec in declared:
+        requirement = Requirement(spec)
+        name = canonicalize_name(requirement.name)
+        assert name in pinned, f"{name} is not in the service lock; re-run pip-compile"
+        assert requirement.specifier.contains(pinned[name], prereleases=True), (
+            f"{name}=={pinned[name]} does not satisfy {requirement.specifier}; re-run pip-compile"
+        )
+    assert {"setuptools", "wheel"} <= set(pinned)
