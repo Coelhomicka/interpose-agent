@@ -119,7 +119,15 @@ def default_source() -> str:
     distribution = importlib.metadata.distribution("interpose")
     direct = distribution.read_text("direct_url.json")
     if direct:
-        url = json.loads(direct).get("url", "")
+        info = json.loads(direct)
+        url = info.get("url", "")
+        vcs = info.get("vcs_info")
+        if vcs:
+            # Installed straight from a repository (`pipx install git+https://...`):
+            # pin the service to the exact commit the user installed.
+            return f"{vcs.get('vcs', 'git')}+{url}@{vcs['commit_id']}"
+        if info.get("archive_info") is not None and not url.startswith("file:"):
+            return url
         if url.startswith("file:"):
             path = unquote(urlsplit(url).path)
             if len(path) > 2 and path[0] == "/" and path[2] == ":":

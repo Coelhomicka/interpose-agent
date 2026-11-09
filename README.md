@@ -86,6 +86,17 @@ login flows, and the request lifecycle.
 
 ## Install
 
+With [pipx](https://pipx.pypa.io), so `interpose` works in any terminal:
+
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath        # then open a new terminal
+pipx install git+https://github.com/Coelhomicka/interpose-agent.git
+interpose setup                  # Windows: protect the vault (see below)
+```
+
+To work on Interpose itself, use a virtual environment instead:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate       # Windows: .\.venv\Scripts\Activate.ps1

@@ -77,6 +77,9 @@ Entries that change a security guarantee are marked **[security]**.
 - The broker no longer forwards the upstream `Content-Encoding` header after `httpx` has already
   decoded the body, which made clients fail to decompress a plain payload.
 - The broker no longer forwards the upstream `Server` and `Date` headers next to its own.
+- `interpose setup` after `pipx install git+https://...` installed `interpose==<version>` from PyPI
+  into the service runtime, which fails while the package is unpublished; it now installs the same
+  repository commit the user installed.
 
 ### Added
 

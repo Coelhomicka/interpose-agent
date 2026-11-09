@@ -86,6 +86,17 @@ tem a visão completa, os fluxos de instalação e de login, e o ciclo de vida d
 
 ## Instalação
 
+Com o [pipx](https://pipx.pypa.io), para o comando `interpose` funcionar em qualquer terminal:
+
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath        # depois abra um terminal novo
+pipx install git+https://github.com/Coelhomicka/interpose-agent.git
+interpose setup                  # Windows: protege o vault (veja abaixo)
+```
+
+Para trabalhar no código do Interpose, use um ambiente virtual:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate       # Windows: .\.venv\Scripts\Activate.ps1

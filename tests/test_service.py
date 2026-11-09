@@ -368,3 +368,20 @@ def test_trusted_data_folder_is_accepted(tmp_path, monkeypatch):
     monkeypatch.setattr(installer, "_owner_sid", lambda path: installer.ADMINISTRATORS_SID)
 
     installer._assert_trusted_tree(tmp_path / "Interpose")
+
+
+def test_default_source_pins_the_commit_of_a_git_install(monkeypatch):
+    class FakeDistribution:
+        version = "0.1.0"
+
+        def read_text(self, name):
+            return (
+                '{"url": "https://github.com/Coelhomicka/interpose-agent.git", '
+                '"vcs_info": {"vcs": "git", "commit_id": "8e56e15c26229dd87eb61491a24dfc421ded02c6"}}'
+            )
+
+    monkeypatch.setattr(installer.importlib.metadata, "distribution", lambda name: FakeDistribution())
+
+    assert installer.default_source() == (
+        "git+https://github.com/Coelhomicka/interpose-agent.git@8e56e15c26229dd87eb61491a24dfc421ded02c6"
+    )
