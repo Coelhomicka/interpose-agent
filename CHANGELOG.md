@@ -80,6 +80,11 @@ Entries that change a security guarantee are marked **[security]**.
 - The broker no longer forwards the upstream `Content-Encoding` header after `httpx` has already
   decoded the body, which made clients fail to decompress a plain payload.
 - The broker no longer forwards the upstream `Server` and `Date` headers next to its own.
+- A folder inside a registered project could not be registered as a project of its own: the
+  dashboard hid the button whenever any project applied. It now offers it, and a project can be
+  unregistered from the top bar (its project secrets and policies are deleted with it, so a later
+  project with the same id cannot inherit them). Home folders and drive roots can no longer be
+  registered, since they would cover nearly every folder.
 - `interpose setup` after `pipx install git+https://...` installed `interpose==<version>` from PyPI
   into the service runtime, which fails while the package is unpublished; it now installs the same
   repository commit the user installed.

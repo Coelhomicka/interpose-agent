@@ -31,6 +31,23 @@ def canonical_root(path: Path | str) -> str:
     return os.path.normcase(display_root(path))
 
 
+def too_broad(path: Path | str) -> bool:
+    """A drive or filesystem root, or a user's home folder (``C:\\Users\\x``, ``/home/x``).
+
+    Projects apply to every folder below their root, so one of these would swallow
+    unrelated work. Decided from the path alone: the service runs as another
+    account and cannot ask whose home a folder is.
+    """
+    folder = Path(path)
+    anchor = Path(folder.anchor) if folder.anchor else None
+    if anchor is not None and folder == anchor:
+        return True
+    parent = folder.parent
+    if anchor is not None and parent.parent == anchor and parent.name.lower() in {"users", "home"}:
+        return True
+    return folder.as_posix() == "/root"
+
+
 def _slug(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48]
     return slug or "project"
@@ -93,6 +110,11 @@ class ProjectRegistry:
 
     def register(self, root: Path | str, name: str | None = None) -> Project:
         shown = display_root(root)
+        if too_broad(shown):
+            raise ScopeError(
+                f"{shown} is a home folder or a drive root; registering it would make nearly every folder "
+                "below it part of this project. Register the project's own folder instead."
+            )
         existing = self.find_exact(shown)
         if existing is not None:
             return existing
@@ -112,6 +134,11 @@ class ProjectRegistry:
                 (project_id, display_name, shown, now),
             )
         return Project(id=project_id, name=display_name, root=shown, created_at=datetime.fromisoformat(now))
+
+    def unregister(self, project_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            return cursor.rowcount > 0
 
     def find_exact(self, root: Path | str) -> Project | None:
         key = canonical_root(root)

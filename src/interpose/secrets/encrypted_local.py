@@ -240,6 +240,14 @@ class EncryptedLocalSecretStore(SecretStore):
             cursor = connection.execute(query, params)
             return cursor.rowcount > 0
 
+    def purge_scope(self, scope: str) -> int:
+        """Delete every secret in ``scope``; returns how many were removed."""
+        scope = validate_scope(scope)
+        if scope == GLOBAL_SCOPE:
+            raise ValueError("refusing to purge the global scope")
+        with self._connect() as connection:
+            return connection.execute("DELETE FROM secrets WHERE scope = ?", (scope,)).rowcount
+
     def exists(
         self,
         reference: SecretReference | str,

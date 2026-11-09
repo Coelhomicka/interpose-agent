@@ -172,6 +172,12 @@ The same reference can mean different values in different places. Inside a regis
 otherwise. Policies follow the same chain, so a project policy can narrow — or widen — how a shared
 global secret may be used in that project only.
 
+A project covers its folder and everything below it; when projects are nested, the closest one wins.
+Opening the dashboard in a folder inside a project offers to register that folder as its own
+project, and clicking the project name in the top bar unregisters it (deleting its project secrets
+and policies). Home folders and drive roots cannot be registered, since they would cover almost
+everything.
+
 Which project is active comes from the registry the operator manages in the dashboard, never from a
 file in the repository. An agent that edits the workspace cannot point its session at another
 project's secrets. Project ciphertexts are also bound to their scope through AES-GCM associated

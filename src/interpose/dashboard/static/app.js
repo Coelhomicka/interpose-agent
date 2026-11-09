@@ -109,7 +109,13 @@ function renderChrome() {
   const project = app.data.project;
   chip.classList.toggle("none", !project);
   chip.textContent = project ? `Project · ${project.name}` : "No project · global only";
-  chip.title = project ? project.root : app.data.working_directory;
+  chip.title = project ? `${project.root} — click to unregister` : app.data.working_directory;
+  chip.onclick = project ? unregisterProject : null;
+  chip.onkeydown = project ? (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); unregisterProject(); }
+  } : null;
+  chip.setAttribute("role", project ? "button" : "status");
+  chip.tabIndex = project ? 0 : -1;
   const proxyUrl = new URL(app.data.proxy_url);
   document.getElementById("proxy-label").textContent = `Proxy · ${proxyUrl.host}`;
   document.getElementById("proxy-status").title = app.data.proxy_url;
@@ -119,6 +125,16 @@ function renderChrome() {
 }
 
 function projectBanner() {
+  if (hasProject() && app.data.project_inherited) {
+    const project = app.data.project;
+    return h("div", { class: "banner" },
+      h("p", {},
+        h("strong", {}, `This folder is inside project "${project.name}". `),
+        "Its secrets and policies apply here because ", h("code", {}, project.root),
+        " contains this folder. Register ", h("code", {}, app.data.working_directory),
+        " to give it its own project; it then takes precedence here."),
+      h("button", { class: "btn primary", onclick: registerProject }, "Register this folder"));
+  }
   if (hasProject()) return null;
   return h("div", { class: "banner" },
     h("p", {},
@@ -126,6 +142,25 @@ function projectBanner() {
       "Register ", h("code", {}, app.data.working_directory),
       " to keep secrets and policies that only apply here."),
     h("button", { class: "btn primary", onclick: registerProject }, "Register as project"));
+}
+
+async function unregisterProject() {
+  const project = app.data.project;
+  const secrets = app.data.secrets.filter((s) => s.scope === "project").length;
+  const policies = app.data.policies.filter((p) => p.scope === "project").length;
+  const ok = await confirmAction(
+    `Unregister project "${project.name}"?`,
+    `Removes the project for ${project.root} and deletes its ${secrets} project secret(s) and ` +
+      `${policies} project policy(ies). Global secrets and policies are kept. This cannot be undone.`,
+    "Unregister");
+  if (!ok) return;
+  try {
+    const result = await api("DELETE", "/api/project");
+    toast(`Unregistered "${project.name}" (${result.secrets} secrets, ${result.policies} policies removed)`);
+    await refresh();
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 async function registerProject() {
