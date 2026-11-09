@@ -89,6 +89,18 @@ async function approveWithPresence(options) {
   };
 }
 
+function suggestionsBanner() {
+  const pending = (app.data.suggestions || []);
+  if (!pending.length) return null;
+  return h("div", { class: "banner" },
+    h("p", {}, h("strong", {}, `${pending.length} policy suggestion(s) from interpose import. `),
+      "Review the hosts before applying; approving may ask for Windows Hello."),
+    ...pending.map((s) => h("button", {
+      class: "btn",
+      onclick: () => openPolicyDialog({ secret: s.secret, scope: s.scope, hosts: s.hosts, inject: s.inject }, s.id),
+    }, `${shortRef(s.secret)} → ${s.provider}`)));
+}
+
 function presenceBanner() {
   if (app.data.presence !== "missing") return null;
   return h("div", { class: "banner warn" },
@@ -309,7 +321,7 @@ function renderPolicies() {
   const intro = h("p", { class: "lead" }, "A policy says where a secret may be sent. With no policy, every use is denied. A project policy overrides the global one inside this project.");
 
   if (!app.data.policies.length) {
-    return [projectBanner(), presenceBanner(), head, intro, h("div", { class: "grid-wrap" },
+    return [projectBanner(), presenceBanner(), suggestionsBanner(), head, intro, h("div", { class: "grid-wrap" },
       empty("No policies yet", "Secrets without a policy cannot be used.",
         h("button", { class: "btn primary", onclick: () => openPolicyDialog({}) }, "Add policy")))];
   }
@@ -322,7 +334,7 @@ function renderPolicies() {
     sections.push(h("h2", { class: "section-title" }, scope === "project" ? `Project · ${app.data.project.name}` : "Global"));
     sections.push(h("div", { class: "cards" }, policies.map((p) => policyCard(p, overridden(p)))));
   }
-  return [projectBanner(), presenceBanner(), head, intro, ...sections];
+  return [projectBanner(), presenceBanner(), suggestionsBanner(), head, intro, ...sections];
 }
 
 function chips(values, fallback) {
@@ -494,7 +506,8 @@ function injectRow(kind = "header", name = "") {
   return row;
 }
 
-function openPolicyDialog(policy) {
+function openPolicyDialog(policy, suggestionId = null) {
+  app.pendingSuggestion = suggestionId;
   const dialog = document.getElementById("policy-dialog");
   const form = document.getElementById("policy-form");
   form.reset();
@@ -508,6 +521,16 @@ function openPolicyDialog(policy) {
   }
   form.hosts.value = (policy.hosts || []).join("\n");
   form.paths.value = (policy.paths || []).join("\n");
+  const select = document.getElementById("provider-select");
+  select.replaceChildren(h("option", { value: "" }, "Custom"),
+    ...(app.providers || []).map((p) => h("option", { value: p.id }, `${p.name} — ${p.hosts.join(", ")}`)));
+  select.onchange = () => {
+    const chosen = (app.providers || []).find((p) => p.id === select.value);
+    if (!chosen) return;
+    form.hosts.value = chosen.hosts.join("\n");
+    document.getElementById("inject-rows").replaceChildren(...chosen.inject.map((s) => injectRow(s.kind, s.name)));
+    updateYaml();
+  };
   const checks = document.getElementById("method-checks");
   checks.replaceChildren(...METHODS.map((m) => h("label", { class: "check" },
     h("input", { type: "checkbox", name: "method", value: m, checked: (policy.methods || []).includes(m), onchange: updateYaml }), m)));
@@ -561,6 +584,10 @@ async function submitPolicy(event) {
   }
   try {
     await api("POST", "/api/policies", payload);
+    if (app.pendingSuggestion) {
+      await api("DELETE", `/api/suggestions/${encodeURIComponent(app.pendingSuggestion)}`).catch(() => {});
+      app.pendingSuggestion = null;
+    }
     document.getElementById("policy-dialog").close();
     toast("Policy saved");
     await refresh();
@@ -573,6 +600,7 @@ async function submitPolicy(event) {
 
 async function boot() {
   for (const dialog of document.querySelectorAll("dialog")) wireDialogClose(dialog);
+  api("GET", "/api/providers").then((list) => { app.providers = list; }).catch(() => { app.providers = []; });
   document.getElementById("secret-form").addEventListener("submit", submitSecret);
   const policyForm = document.getElementById("policy-form");
   policyForm.addEventListener("submit", submitPolicy);

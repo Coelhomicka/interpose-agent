@@ -1,0 +1,13 @@
+# Use from another repository's .pre-commit-config.yaml:
+#
+#   - repo: https://github.com/Coelhomicka/interpose-agent
+#     rev: <tag or commit>
+#     hooks:
+#       - id: interpose-scan
+- id: interpose-scan
+  name: interpose scan (plaintext credentials)
+  description: Refuse commits that add plaintext API keys, tokens or passwords, in any stack's config files.
+  entry: interpose scan
+  language: python
+  pass_filenames: true
+  stages: [pre-commit, pre-push]

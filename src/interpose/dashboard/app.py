@@ -42,6 +42,8 @@ from ..core.policies import PolicyDocument, PolicyError, widens
 from ..core.presence import PresenceError, PresenceVerifier, change_digest
 from ..core.references import SecretReference, SecretReferenceError, normalize_secret_reference
 from ..core.scopes import GLOBAL_SCOPE, ScopeContext, ScopeError, project_scope
+from ..onboarding.providers import brokerable_providers
+from ..onboarding.providers import provider as provider_by_id
 from ..projects import canonical_root
 from ..secrets.base import SecretValueError
 
@@ -180,6 +182,17 @@ class LoginRequest(BaseModel):
     cwd: str = Field(min_length=1, max_length=4096)
 
 
+class ImportedSecret(BaseModel):
+    reference: str = Field(min_length=1, max_length=512)
+    value: str = Field(min_length=1, max_length=65536)
+    provider: str | None = Field(default=None, max_length=64)
+
+
+class ImportRequest(BaseModel):
+    cwd: str = Field(min_length=1, max_length=4096)
+    items: list[ImportedSecret] = Field(min_length=1, max_length=500)
+
+
 def _absolute_folder(value: str) -> Path:
     folder = Path(value)
     if not folder.is_absolute():
@@ -200,6 +213,10 @@ def create_dashboard_app(
     presence: PresenceVerifier | None = None,
 ) -> FastAPI:
     auth = auth or DashboardAuth()
+    # Policies proposed by `interpose import`, waiting for the operator. Built only
+    # from the provider catalog, never from what the caller sends, so a caller
+    # holding the control token cannot propose an arbitrary host.
+    suggestions: dict[str, dict[str, Any]] = {}
     app = FastAPI(title="Interpose Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth = auth
 
@@ -417,6 +434,12 @@ def create_dashboard_app(
             ),
             "proxy_url": context.proxy_url,
             "presence": presence_status(),
+            "suggestions": [
+                {**suggestion, "scope": "project" if suggestion["scope"] == active_project_scope else "global"}
+                for suggestion in suggestions.values()
+                if suggestion["scope"] in visible_scopes
+                and runtime.policy_repository.get_by_secret(suggestion["secret"], scopes=(suggestion["scope"],)) is None
+            ],
             "secrets": secret_rows,
             "policies": policy_rows,
             "effective": effective,
@@ -530,6 +553,23 @@ def create_dashboard_app(
         audit_admin("ADMIN_POLICY_DELETE", record.secret_reference, record.scope)
         return {"deleted": True}
 
+    @app.get("/api/providers")
+    def providers() -> list[dict[str, Any]]:
+        return [
+            {
+                "id": item.id,
+                "name": item.name,
+                "hosts": list(item.hosts),
+                "inject": [{"kind": kind, "name": name} for kind, name in item.inject],
+                "env_names": list(item.env_names),
+            }
+            for item in brokerable_providers()
+        ]
+
+    @app.delete("/api/suggestions/{suggestion_id}")
+    def dismiss_suggestion(suggestion_id: str) -> dict[str, bool]:
+        return {"dismissed": suggestions.pop(suggestion_id, None) is not None}
+
     @app.get("/api/audit")
     def audit(limit: int = 200) -> list[dict[str, Any]]:
         entries = runtime.audit_logger.list(limit=max(1, min(limit, 1000)))  # newest first
@@ -575,8 +615,44 @@ def create_dashboard_app(
             return {"exists": exists}
 
         @app.get("/control/health")
-        def control_health() -> dict[str, bool]:
-            return {"ok": True}
+        def control_health() -> dict[str, Any]:
+            return {"ok": True, "presence": presence_status()}
+
+        @app.post("/control/import")
+        def control_import(payload: ImportRequest) -> dict[str, Any]:
+            """Store values found by `interpose import` and suggest their policies.
+
+            Writing a value needs no approval anywhere (values are write-only and
+            replacing one reveals nothing). Policies are only *suggested*: the
+            operator applies them in the dashboard, under the usual approval.
+            """
+            project_id = project_for(payload.cwd)
+            scope = project_scope(project_id) if project_id else GLOBAL_SCOPE
+            stored, suggested = 0, 0
+            for item in payload.items:
+                try:
+                    reference = normalize_secret_reference(item.reference)
+                    runtime.secret_store.store(reference, item.value, scope=scope)
+                except (SecretReferenceError, SecretValueError) as exc:
+                    raise HTTPException(status_code=422, detail=f"{item.reference}: {exc}") from exc
+                stored += 1
+                audit_admin("ADMIN_SECRET_IMPORT", reference, scope)
+                known = provider_by_id(item.provider) if item.provider else None
+                if known is None or not known.brokerable:
+                    continue
+                if runtime.policy_repository.get_by_secret(reference, scopes=(scope,)) is not None:
+                    continue
+                suggestion_id = secrets.token_urlsafe(8)
+                suggestions[suggestion_id] = {
+                    "id": suggestion_id,
+                    "scope": scope,
+                    "secret": reference,
+                    "provider": known.name,
+                    "hosts": list(known.hosts),
+                    "inject": [{"kind": kind, "name": name} for kind, name in known.inject],
+                }
+                suggested += 1
+            return {"stored": stored, "suggested": suggested, "scope": scope}
 
     return app
 

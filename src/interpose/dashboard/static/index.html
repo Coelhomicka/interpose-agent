@@ -80,6 +80,10 @@
             <label class="radio-card"><input type="radio" name="scope" value="global">
               <span><strong>Everywhere</strong><small>Default for all projects.</small></span></label>
           </fieldset>
+          <label class="field"><span>Provider <em>(optional)</em></span>
+            <select name="provider" id="provider-select"><option value="">Custom</option></select>
+            <small>Fills in the hosts and credential location of a known API.</small>
+          </label>
           <label class="field"><span>Allowed hosts</span>
             <textarea name="hosts" rows="3" required spellcheck="false" placeholder="api.openai.com"></textarea>
             <small>One per line. <code>*.example.com</code> wildcards are allowed.</small>

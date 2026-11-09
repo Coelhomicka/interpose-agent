@@ -79,6 +79,12 @@ class ServiceClient:
         port = urlsplit(self.endpoint.dashboard_url).port
         return f"http://localhost:{port}{path}"
 
+    def import_secrets(self, working_directory: Path, items: list[dict[str, str | None]]) -> dict:
+        return self._request("POST", "/control/import", json={"cwd": str(working_directory), "items": items})
+
+    def health(self) -> dict:
+        return self._request("GET", "/control/health")
+
     def project_id(self, working_directory: Path) -> str | None:
         return self._request("GET", "/control/project", params={"cwd": str(working_directory)})["id"]
 
