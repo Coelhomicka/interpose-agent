@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import tempfile
+import time
 import webbrowser
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from ..session.isolation.base import IsolationError
 from ..session.isolation.factory import create_isolation_backend
 from ..session.launcher import SessionLauncher, SessionLaunchError
 from ..session.profile import SessionProfile, SessionProfileError
+from .banner import print_banner, print_fields
 
 app = typer.Typer(add_completion=False, help="Administrative CLI for Interpose")
 secret_app = typer.Typer(add_completion=False, help="Secret management commands")
@@ -48,6 +50,24 @@ app.add_typer(policy_app, name="policy")
 app.add_typer(isolation_app, name="isolation")
 app.add_typer(service_app, name="service")
 app.add_typer(agents_app, name="agents")
+
+
+@app.callback(invoke_without_command=True)
+def _main(ctx: typer.Context) -> None:
+    """Credential interposition for untrusted AI agents."""
+    if ctx.invoked_subcommand is not None:
+        return
+    print_banner()
+    commands = [
+        ("Start", "interpose up", "start Interpose and open the dashboard (Ctrl+C stops it)"),
+        ("Run", "interpose run --profile session.yaml -- <agent>", ""),
+        ("Teach", "interpose agents install", "instructions for Claude, Codex, Cursor, Devin..."),
+        ("Protect", "interpose setup", "Windows: move the vault into an OS service"),
+        ("Help", "interpose --help", ""),
+    ]
+    width = max(len(command) for _, command, note in commands if note)
+    print_fields([(label, f"{command.ljust(width)}   {note}".rstrip()) for label, command, note in commands])
+    typer.echo("")
 
 
 def _container():
@@ -389,13 +409,15 @@ def up(
     login_url = f"http://127.0.0.1:{dashboard_port}/login?t={auth.login_token}"
 
     project = container.project
-    typer.echo("")
-    typer.secho("  Interpose", bold=True)
-    typer.echo(f"  Project:    {project.name} ({project.root})" if project else
-               f"  Project:    none - global scope only ({working_directory})")
-    typer.echo(f"  Proxy:      {proxy_url}")
-    typer.echo(f"  Dashboard:  {login_url}")
-    typer.echo("              (single-use login link; restart for a new one)")
+    print_banner()
+    print_fields([
+        ("Mode", "development"),
+        ("Project",
+         f"{project.name} ({project.root})" if project else f"none - global scope only ({working_directory})"),
+        ("Proxy", proxy_url),
+        ("Dashboard", login_url),
+    ])
+    typer.echo("               single-use login link; restart for a new one")
     typer.echo("")
     if os.name == "nt":
         typer.secho(
@@ -425,9 +447,65 @@ def up(
         asyncio.run(serve())
 
 
+def _service_ready(layout: ServiceLayout) -> bool:
+    """The service runs and the endpoint it published is its own (not a stale file)."""
+    from ..service.layout import ServiceEndpoint
+    from ..service.win32 import service_pid
+
+    pid = service_pid()
+    if pid is None or not layout.endpoint_file.is_file():
+        return False
+    try:
+        return ServiceEndpoint.from_json(layout.endpoint_file.read_text(encoding="utf-8")).pid == pid
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def _ensure_service_running() -> bool:
+    """Start the service if needed; True when this call started it."""
+    from ..service.win32 import start_service
+
+    layout = ServiceLayout.default()
+    if _service_ready(layout):
+        return False
+    typer.echo("Starting Interpose ...")
+    try:
+        start_service()
+    except PermissionError as exc:
+        typer.echo(
+            "This installation cannot be started without administrator rights (it predates on-demand start). "
+            "Run `interpose setup` again once to update it.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"Could not start the Interpose service: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    deadline = time.monotonic() + 30
+    while not _service_ready(layout):
+        if time.monotonic() > deadline:
+            typer.echo(f"Interpose did not come up within 30 seconds; see {layout.log_file} (administrator).",
+                       err=True)
+            raise typer.Exit(code=1)
+        time.sleep(0.25)
+    return True
+
+
+def _stop_service_quietly() -> None:
+    from ..service.win32 import service_pid, stop_service
+
+    with contextlib.suppress(OSError):
+        stop_service()
+    deadline = time.monotonic() + 15
+    while service_pid() is not None and time.monotonic() < deadline:
+        time.sleep(0.25)
+
+
 def _open_service_dashboard(working_directory: Path, open_browser: bool) -> None:
     from ..service.client import ServiceClient, ServiceUnavailable
+    from ..service.win32 import service_pid
 
+    started_here = _ensure_service_running()
     try:
         client = ServiceClient.connect()
         client.verify_identity()
@@ -436,15 +514,31 @@ def _open_service_dashboard(working_directory: Path, open_browser: bool) -> None
     except ServiceUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    typer.echo("")
-    typer.secho("  Interpose (service)", bold=True)
-    typer.echo(f"  Project:    {project_id or 'none - global scope only'} ({working_directory})")
-    typer.echo(f"  Proxy:      {client.proxy_base(working_directory)}")
-    typer.echo(f"  Dashboard:  {login_url}")
-    typer.echo("              (single-use login link, valid for 5 minutes)")
+    print_banner()
+    print_fields([
+        ("Mode", "service (NT SERVICE\\Interpose)"),
+        ("Project", f"{project_id or 'none - global scope only'} ({working_directory})"),
+        ("Proxy", client.proxy_base(working_directory)),
+        ("Dashboard", login_url),
+    ])
+    typer.echo("               single-use login link, valid for 5 minutes")
     typer.echo("")
     if open_browser:
         webbrowser.open(login_url)
+    if not started_here:
+        typer.echo("  Interpose was already running (another `interpose up`?); leaving it running.")
+        return
+
+    # Like `aspire run`: Interpose lives as long as this command does.
+    typer.echo("  Press Ctrl+C to stop Interpose.", err=True)
+    try:
+        while service_pid() is not None:
+            time.sleep(1)
+        typer.echo("Interpose stopped.")
+    except KeyboardInterrupt:
+        typer.echo("Stopping Interpose ...")
+        _stop_service_quietly()
+        typer.echo("Interpose stopped.")
 
 
 # --------------------------------------------------------------------------- service
@@ -553,6 +647,7 @@ def setup(
     from ..config import _current_user_sid
     from ..service.install import default_source
 
+    print_banner()
     if os.name == "nt":
         _preflight_install()
     _run_service_task(
@@ -589,12 +684,25 @@ def service_uninstall(
 
 @service_app.command("start")
 def service_start() -> None:
-    _run_service_task("start")
+    """Start the service in the background (`interpose up` does this and stops it on exit)."""
+    if _ensure_service_running():
+        typer.echo("Interpose is running. Stop it with `interpose service stop`.")
+    else:
+        typer.echo("Interpose was already running.")
 
 
 @service_app.command("stop")
 def service_stop() -> None:
-    _run_service_task("stop")
+    """Stop the service."""
+    from ..service.win32 import stop_service
+
+    try:
+        stop_service()
+    except PermissionError:
+        _run_service_task("stop")
+        return
+    _stop_service_quietly()
+    typer.echo("Interpose stopped.")
 
 
 @service_app.command("status")

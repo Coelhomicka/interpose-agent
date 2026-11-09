@@ -86,6 +86,17 @@ login flows, and the request lifecycle.
 
 ## Install
 
+With [pipx](https://pipx.pypa.io), so `interpose` works in any terminal:
+
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath        # then open a new terminal
+pipx install git+https://github.com/Coelhomicka/interpose-agent.git
+interpose setup                  # Windows: protect the vault (see below)
+```
+
+To work on Interpose itself, use a virtual environment instead:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate       # Windows: .\.venv\Scripts\Activate.ps1
@@ -107,9 +118,12 @@ interpose setup        # one administrator (UAC) prompt; never again after this
 `setup` copies a private Python runtime and Interpose into `%ProgramFiles%\Interpose`, registers
 the `Interpose` service under the virtual account `NT SERVICE\Interpose` (no password, no login),
 and moves your vault into `%ProgramData%\Interpose\vault`, which only that account, SYSTEM, and
-elevated administrators can open. The copy in your profile is destroyed. From then on
-`interpose up` just opens the dashboard of the running service, and `interpose run` points
-sessions at it. Nothing else changes for the agent.
+elevated administrators can open. The copy in your profile is destroyed.
+
+The service does **not** start with Windows. Like `aspire run`, `interpose up` starts it, opens the
+dashboard and keeps running in the terminal; **Ctrl+C stops it**. `setup` lets your account start
+and stop this one service, so none of that needs administrator rights. While it runs,
+`interpose run` points sessions at it. Nothing else changes for the agent.
 
 Run `setup` yourself, not from an agent session: until the service exists, the code it installs
 from is still writable by that agent. Never run an agent elevated; an administrator can read
@@ -137,8 +151,9 @@ interpose up
 
 This starts the broker and a local dashboard in one process and opens the dashboard in your
 browser, in the style of the .NET Aspire dashboard. With the [service](#protect-the-vault-install-the-service-windows)
-installed, `interpose up` starts nothing: it checks that the service owns both ports, asks it for a
-single-use login link bound to the current folder, and opens it. From there you can:
+installed, `interpose up` starts the service instead, checks that it owns both ports, asks it for a
+single-use login link bound to the current folder, and opens it; Ctrl+C stops the service again.
+From there you can:
 
 - **register the folder as a project** — its secrets and policies apply only when the runtime runs
   there;

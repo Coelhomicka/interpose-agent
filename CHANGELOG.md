@@ -35,6 +35,9 @@ Entries that change a security guarantee are marked **[security]**.
   skill, `GEMINI.md`, and a Cursor rule — as marked blocks that never touch the rest of a file.
   `interpose setup` installs the user-level ones for the agents it finds.
 - `interpose run` sets `INTERPOSE_PROXY` in the agent's environment.
+- The service no longer starts with Windows. `interpose up` starts it and stops it on Ctrl+C, like
+  `aspire run`; `setup` grants the installing user the right to start and stop that one service, so
+  neither needs elevation. `interpose service start|stop` work unelevated too.
 - **[security]** `interpose run` refuses to start an agent from an administrator shell unless
   `--allow-elevated` is given, and warns when the vault is in development mode.
 - **[security]** `interpose-exec` passes secret-bearing arguments to curl on standard input instead
@@ -77,6 +80,9 @@ Entries that change a security guarantee are marked **[security]**.
 - The broker no longer forwards the upstream `Content-Encoding` header after `httpx` has already
   decoded the body, which made clients fail to decompress a plain payload.
 - The broker no longer forwards the upstream `Server` and `Date` headers next to its own.
+- `interpose setup` after `pipx install git+https://...` installed `interpose==<version>` from PyPI
+  into the service runtime, which fails while the package is unpublished; it now installs the same
+  repository commit the user installed.
 
 ### Added
 
