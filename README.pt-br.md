@@ -133,6 +133,48 @@ gerenciam o serviço; o `uninstall` mantém o vault, a menos que você passe `--
 No `session.yaml`, escreva as URLs do broker como `${INTERPOSE_PROXY}/<host>`. Isso vira o endereço
 do broker para o projeto atual, com ou sem o serviço.
 
+## Trazendo um projeto existente: scan, import, doctor
+
+```powershell
+interpose doctor            # o vault está protegido? Windows Hello? agentes? chaves em texto puro aqui?
+interpose scan              # lista credenciais em texto puro (sem mostrar valores); sai com 1 se achar
+interpose import            # mostra o que seria movido
+interpose import --apply    # move para o vault e troca cada valor pela referência secret://
+```
+
+O `scan` e o `import` leem os arquivos de credenciais de todas as stacks comuns, não só o `.env`:
+
+| Stack | Arquivos |
+|---|---|
+| dotenv (Node, Python, Ruby, PHP, Go, Docker) | `.env`, `.env.*`, `*.env`, `.flaskenv`, `.envrc` (direnv) |
+| .NET / Azure Functions | `appsettings*.json`, `secrets.json`, `local.settings.json`, `web.config`, `app.config` |
+| Java / Spring / Android | `application*.properties`, `application*.yml`, `gradle.properties`, `local.properties` |
+| Rails | `config/secrets.yml`, `config/database.yml`, `config/application.yml` |
+| Python / Django | `settings.py`, `local_settings.py`, `config.py` |
+| PHP / WordPress | `wp-config.php`, `config.php` |
+| Docker / Kubernetes / Helm | `docker-compose*.yml`, `compose*.yml`, `values*.yaml`, `secrets.yaml` |
+| Terraform | `*.tfvars`, `*.auto.tfvars` |
+| Cloudflare / Streamlit / Rust | `.dev.vars`, `wrangler.toml`, `.streamlit/secrets.toml`, `.cargo/credentials.toml` |
+| Gerenciadores de pacotes | `.npmrc`, `.pypirc`, `pip.conf`, `.netrc`, `.yarnrc.yml` |
+| MCP e configs de agentes | `.mcp.json`, `mcp.json`, `claude_desktop_config.json`, `settings.local.json` |
+| Código-fonte | chaves com formato inconfundível (`ghp_…`, `sk-ant-…`, `AKIA…`, blocos de chave privada); só reportadas, nunca reescritas |
+
+Valores de cerca de 30 provedores de API conhecidos (OpenAI, Anthropic, GitHub, Stripe, Slack, Hugging
+Face, Gemini, Supabase...) vão para o vault com uma política pronta (`interpose policy templates`).
+Com o serviço, a política aparece como sugestão no painel, onde você confere os hosts e aprova.
+Valores que o broker ainda não consegue injetar (senhas de banco, chaves AWS, chaves privadas) são
+reportados e ficam onde estão, a menos que você passe `--include-unbrokered`. Valores que já foram
+para o git são sinalizados: eles continuam no histórico, então rotacione-os.
+
+Bloqueie chaves novas em texto puro no commit com o [pre-commit](https://pre-commit.com):
+
+```yaml
+- repo: https://github.com/Coelhomicka/interpose-agent
+  rev: <tag ou commit>
+  hooks:
+    - id: interpose-scan
+```
+
 ## Começo rápido: o painel
 
 Na pasta do seu projeto:

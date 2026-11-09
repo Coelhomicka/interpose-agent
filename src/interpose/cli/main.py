@@ -264,6 +264,182 @@ def policy_inspect(policy_id: int) -> None:
     typer.echo(record.definition)
 
 
+@policy_app.command("templates")
+def policy_templates() -> None:
+    """List the API providers with a ready-made policy (hosts and credential slot)."""
+    from ..onboarding.providers import brokerable_providers
+
+    for item in brokerable_providers():
+        slots = ", ".join(f"{kind} {name}" for kind, name in item.inject)
+        typer.echo(f"{item.id:<12} {', '.join(item.hosts):<48} {slots}")
+
+
+# --------------------------------------------------------------------------- onboarding
+
+
+def _print_findings(findings, root: Path) -> None:
+    for finding in findings:
+        where = f"{finding.public(root)['file']}:{finding.line}"
+        kind = finding.provider.name if finding.provider else "credential"
+        tracked = "  [committed to git]" if finding.tracked else ""
+        typer.echo(f"  {where:<44} {finding.key[:32]:<32} {kind:<22} {finding.masked}{tracked}")
+
+
+@app.command("scan")
+def scan_command(
+    paths: list[Path] = typer.Argument(None, help="Files or folders (default: the current folder)."),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+    include_examples: bool = typer.Option(False, help="Also scan .example / .sample / template files."),
+) -> None:
+    """Find plaintext credentials in config files of any stack, and in source code.
+
+    Exits with status 1 when something is found, so it works as a pre-commit hook
+    or a CI step. Values are never printed, only their first characters.
+    """
+    from ..onboarding.scanner import scan
+
+    root = Path.cwd()
+    findings = scan(root, paths or None, include_examples=include_examples)
+    if as_json:
+        typer.echo(json.dumps([finding.public(root) for finding in findings], indent=2))
+    elif not findings:
+        typer.echo("No plaintext credentials found.")
+    else:
+        typer.echo(f"{len(findings)} plaintext credential(s):")
+        _print_findings(findings, root)
+        if any(finding.tracked for finding in findings):
+            typer.echo("\nValues committed to git stay in its history: rotate them at the provider.")
+        typer.echo("\nMove them into the vault with `interpose import --apply`.")
+    if findings:
+        raise typer.Exit(code=1)
+
+
+class _LocalSink:
+    def __init__(self, working_directory: Path) -> None:
+        from ..core.scopes import GLOBAL_SCOPE, project_scope
+
+        self.container = _container()
+        project = self.container.project
+        self.scope = project_scope(project.id) if project else GLOBAL_SCOPE
+        self.policies = 0
+
+    def store(self, reference: str, value: str, provider: str | None) -> None:
+        from ..onboarding.providers import provider as provider_by_id
+
+        self.container.secret_store.store(reference, value, scope=self.scope)
+        known = provider_by_id(provider) if provider else None
+        if known and known.brokerable and self.container.policy_repository.get_by_secret(
+            reference, scopes=(self.scope,)
+        ) is None:
+            self.container.policy_repository.store(PolicyDocument.model_validate(known.policy(reference)),
+                                                   scope=self.scope)
+            self.policies += 1
+
+
+class _ServiceSink:
+    def __init__(self, working_directory: Path) -> None:
+        from ..service.client import ServiceClient, ServiceUnavailable
+
+        try:
+            self.client = ServiceClient.connect()
+            self.client.verify_identity()
+        except ServiceUnavailable as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+        self.working_directory = working_directory
+        self.suggested = 0
+        self.scope = "global"
+
+    def store(self, reference: str, value: str, provider: str | None) -> None:
+        result = self.client.import_secrets(
+            self.working_directory, [{"reference": reference, "value": value, "provider": provider}]
+        )
+        self.suggested += int(result.get("suggested", 0))
+        self.scope = result.get("scope", self.scope)
+
+
+@app.command("import")
+def import_command(
+    path: Path = typer.Argument(None, help="Project folder (default: the current folder)."),
+    apply_changes: bool = typer.Option(False, "--apply", help="Store the values and rewrite the files."),
+    include_unbrokered: bool = typer.Option(
+        False, help="Also move values the broker cannot inject yet (database passwords...). The application "
+                    "will then see a secret:// reference for them."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation."),
+) -> None:
+    """Move plaintext credentials from any stack's config files into the vault.
+
+    Each value is stored under a secret:// reference and replaced in place by the
+    reference; known API providers also get a policy (with the service, a
+    suggestion you approve in the dashboard). Without --apply, only shows the plan.
+    """
+    from ..onboarding.importer import apply, plan
+    from ..onboarding.scanner import scan
+
+    root = (path or Path.cwd()).resolve()
+    findings = scan(root)
+    if not findings:
+        typer.echo("No plaintext credentials found.")
+        return
+    items = plan(findings, namespace=root.name, include_unbrokered=include_unbrokered)
+    moving = [item for item in items if item.move]
+    for item in items:
+        finding = item.finding
+        where = f"{finding.public(root)['file']}:{finding.line}"
+        action = f"-> {item.reference}" if item.move else "   left in place"
+        typer.echo(f"  {where:<44} {finding.key[:28]:<28} {action}")
+        typer.echo(f"  {'':<44} {'':<28}    {item.reason}")
+    if not moving:
+        typer.echo("\nNothing the broker can carry yet. See the notes above.")
+        return
+    if not apply_changes:
+        typer.echo(f"\n{len(moving)} value(s) would move. Run again with --apply to do it.")
+        return
+    if not yes and not typer.confirm(f"Move {len(moving)} value(s) into the vault and rewrite the files?"):
+        raise typer.Exit(code=1)
+
+    sink = _ServiceSink(root) if service_installed() else _LocalSink(root)
+    try:
+        apply(items, sink)
+    except (RuntimeError, OSError, SecretValueError, SecretReferenceError) as exc:
+        typer.echo(f"Import stopped: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"\nMoved {len(moving)} value(s) into the vault ({sink.scope} scope).")
+    if isinstance(sink, _LocalSink) and sink.policies:
+        typer.echo(f"Created {sink.policies} policy(ies) from the provider catalog.")
+    if isinstance(sink, _ServiceSink) and sink.suggested:
+        typer.echo(f"{sink.suggested} policy suggestion(s) are waiting in the dashboard (`interpose up`).")
+    if any(item.finding.tracked for item in moving):
+        typer.echo("Some values were committed to git and remain in its history: rotate them at the provider.")
+    typer.echo("Run the app through Interpose (`interpose run`) so requests go through the broker.")
+    hints = sorted({hint for item in moving if item.finding.provider
+                    for hint in [item.finding.provider.base_url_hint()] if hint})
+    if hints:
+        typer.echo("Point the official SDKs at the broker (set inside the `interpose run` session):")
+        for hint in hints:
+            typer.echo(f"  {hint}")
+
+
+@app.command("doctor")
+def doctor_command() -> None:
+    """Check this machine and folder: vault protection, Windows Hello, agents, plaintext credentials."""
+    from ..onboarding.doctor import FAIL, OK, WARN, run_checks
+    from ..onboarding.scanner import scan
+
+    symbols = {OK: typer.style("✓", fg=typer.colors.GREEN), WARN: typer.style("!", fg=typer.colors.YELLOW),
+               FAIL: typer.style("✗", fg=typer.colors.RED)}
+    checks = run_checks(Path.cwd(), scan=scan)
+    for check in checks:
+        line = f" {symbols[check.status]} {check.title}"
+        if check.detail:
+            line += f": {check.detail}"
+        typer.echo(line)
+        if check.fix and check.status != OK:
+            typer.echo(f"     {check.fix}")
+    if any(check.status == FAIL for check in checks):
+        raise typer.Exit(code=1)
+
+
 @isolation_app.command("doctor")
 def isolation_doctor(
     profile: Path = typer.Option(..., exists=True, dir_okay=False, readable=True),

@@ -133,6 +133,48 @@ vault unless you pass `--purge`.
 In `session.yaml`, write broker URLs as `${INTERPOSE_PROXY}/<host>`. It expands to the broker
 address for the current project, with or without the service.
 
+## Bring an existing project: scan, import, doctor
+
+```powershell
+interpose doctor            # is the vault protected? Windows Hello? agents? plaintext keys here?
+interpose scan              # list plaintext credentials (values never printed); exit 1 if any
+interpose import            # show what would move
+interpose import --apply    # move them into the vault and replace each one with its secret:// reference
+```
+
+`scan` and `import` read the credential files of every common stack, not only `.env`:
+
+| Stack | Files |
+|---|---|
+| dotenv (Node, Python, Ruby, PHP, Go, Docker) | `.env`, `.env.*`, `*.env`, `.flaskenv`, `.envrc` (direnv) |
+| .NET / Azure Functions | `appsettings*.json`, `secrets.json`, `local.settings.json`, `web.config`, `app.config` |
+| Java / Spring / Android | `application*.properties`, `application*.yml`, `gradle.properties`, `local.properties` |
+| Rails | `config/secrets.yml`, `config/database.yml`, `config/application.yml` |
+| Python / Django | `settings.py`, `local_settings.py`, `config.py` |
+| PHP / WordPress | `wp-config.php`, `config.php` |
+| Docker / Kubernetes / Helm | `docker-compose*.yml`, `compose*.yml`, `values*.yaml`, `secrets.yaml` |
+| Terraform | `*.tfvars`, `*.auto.tfvars` |
+| Cloudflare / Streamlit / Rust | `.dev.vars`, `wrangler.toml`, `.streamlit/secrets.toml`, `.cargo/credentials.toml` |
+| Package managers | `.npmrc`, `.pypirc`, `pip.conf`, `.netrc`, `.yarnrc.yml` |
+| MCP and agent configs | `.mcp.json`, `mcp.json`, `claude_desktop_config.json`, `settings.local.json` |
+| Source code | keys with an unmistakable shape (`ghp_…`, `sk-ant-…`, `AKIA…`, private key blocks); reported, never rewritten |
+
+Values from about 30 known API providers (OpenAI, Anthropic, GitHub, Stripe, Slack, Hugging Face,
+Gemini, Supabase...) move into the vault with a ready-made policy (`interpose policy templates`).
+With the service, the policy is suggested in the dashboard, where you review the hosts and approve
+it. Values the broker cannot inject yet (database passwords, AWS keys, private keys) are reported
+and left in place unless you pass `--include-unbrokered`. Values committed to git are flagged: they
+stay in the history, so rotate them.
+
+Block new plaintext keys at commit time with [pre-commit](https://pre-commit.com):
+
+```yaml
+- repo: https://github.com/Coelhomicka/interpose-agent
+  rev: <tag or commit>
+  hooks:
+    - id: interpose-scan
+```
+
 ## Quickstart: the dashboard
 
 From your project folder:
