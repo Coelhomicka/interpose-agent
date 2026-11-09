@@ -38,7 +38,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..container import RuntimeContainer
 from ..core.local_guard import is_loopback_authority
-from ..core.policies import PolicyDocument, PolicyError
+from ..core.policies import PolicyDocument, PolicyError, widens
+from ..core.presence import PresenceError, PresenceVerifier, change_digest
 from ..core.references import SecretReference, SecretReferenceError, normalize_secret_reference
 from ..core.scopes import GLOBAL_SCOPE, ScopeContext, ScopeError, project_scope
 from ..projects import canonical_root
@@ -166,6 +167,9 @@ class PolicyWrite(BaseModel):
     inject: list[InjectWrite] = Field(default_factory=list)
     allow_insecure_http: bool = False
     allow_exec: bool = False
+    # A WebAuthn assertion answering the challenge this change was given; see
+    # interpose.core.presence. Not part of the policy itself.
+    approval: dict[str, str] | None = None
 
 
 class ProjectRegistration(BaseModel):
@@ -193,6 +197,7 @@ def create_dashboard_app(
     auth: DashboardAuth | None = None,
     *,
     control_token: str | None = None,
+    presence: PresenceVerifier | None = None,
 ) -> FastAPI:
     auth = auth or DashboardAuth()
     app = FastAPI(title="Interpose Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
@@ -216,6 +221,48 @@ def create_dashboard_app(
         if project_id is None:
             raise HTTPException(status_code=409, detail="this folder is not a registered project")
         return project_scope(project_id)
+
+    def presence_status() -> str:
+        if presence is None:
+            return "off"
+        return "enrolled" if presence.enrolled() else "missing"
+
+    def require_presence(
+        request: Request, scope: str, document: PolicyDocument, approval: dict[str, str] | None
+    ) -> str | Response:
+        """Gate a policy write that could widen where the secret goes.
+
+        Returns how the write was authorized, or the response to send instead:
+        428 with a WebAuthn challenge bound to this exact change, or 403 when
+        the presented approval does not verify.
+        """
+        if presence is None:
+            return "not-required"
+        existing = runtime.policy_repository.get_by_secret(document.normalized_secret(), scopes=(scope,))
+        previous = PolicyDocument.model_validate_json(existing.definition) if existing else None
+        if not widens(document, previous):
+            return "not-required (narrowing)"
+        if not presence.enrolled():
+            return "not-enrolled"
+        host = request.headers.get("host", "")
+        if host.split(":")[0] != "localhost":
+            return JSONResponse(
+                {"detail": f"open the dashboard at http://localhost:{request.url.port} to approve with Windows Hello"},
+                status_code=409,
+            )
+        session_id = request.cookies.get(SESSION_COOKIE, "")
+        digest = change_digest(scope, document.model_dump_json())
+        try:
+            if approval is None:
+                challenge = presence.begin(session_id, digest)
+                return JSONResponse(
+                    {"detail": "this change widens where the secret can go; approve it", "approval": challenge},
+                    status_code=428,
+                )
+            presence.finish(session_id, digest, approval, origin=f"http://{host}")
+        except PresenceError as exc:
+            return JSONResponse({"detail": f"approval refused: {exc}"}, status_code=403)
+        return "verified"
 
     def audit_admin(action: str, reference: str, scope: str, **details: Any) -> None:
         runtime.audit_logger.record(
@@ -369,6 +416,7 @@ def create_dashboard_app(
                 and canonical_root(project.root) != canonical_root(folder_of(request))
             ),
             "proxy_url": context.proxy_url,
+            "presence": presence_status(),
             "secrets": secret_rows,
             "policies": policy_rows,
             "effective": effective,
@@ -463,8 +511,14 @@ def create_dashboard_app(
             normalize_secret_reference(document.secret)
         except (ValidationError, PolicyError, SecretReferenceError, ScopeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        approved = require_presence(request, scope, document, payload.approval)
+        if isinstance(approved, Response):
+            return approved
         record = runtime.policy_repository.store(document, scope=scope)
-        audit_admin("ADMIN_POLICY_SET", record.secret_reference, scope, hosts=definition["allow"]["hosts"])
+        audit_admin(
+            "ADMIN_POLICY_SET", record.secret_reference, scope,
+            hosts=definition["allow"]["hosts"], user_presence=approved,
+        )
         return {"id": record.id}
 
     @app.delete("/api/policies/{policy_id}")

@@ -36,6 +36,12 @@ async function api(method, path, body) {
     throw new Error("Session expired");
   }
   const payload = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
+  if (response.status === 428 && payload?.approval && body && !body.approval) {
+    // The change widens where a secret can go: approve it with Windows Hello (or
+    // another enrolled authenticator), then send the same change with the proof.
+    const approval = await approveWithPresence(payload.approval);
+    return api(method, path, { ...body, approval });
+  }
   if (!response.ok) {
     const detail = payload?.detail;
     const message = Array.isArray(detail)
@@ -44,6 +50,52 @@ async function api(method, path, body) {
     throw new Error(message);
   }
   return payload;
+}
+
+function fromB64url(text) {
+  const base64 = text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4);
+  return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+}
+
+function toB64url(buffer) {
+  let binary = "";
+  for (const byte of new Uint8Array(buffer)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function approveWithPresence(options) {
+  if (!window.PublicKeyCredential) throw new Error("This browser cannot use Windows Hello (WebAuthn).");
+  toast("Confirm this change with Windows Hello");
+  let credential;
+  try {
+    credential = await navigator.credentials.get({
+      publicKey: {
+        challenge: fromB64url(options.challenge),
+        rpId: options.rpId,
+        allowCredentials: options.allowCredentials.map((c) => ({ type: c.type, id: fromB64url(c.id) })),
+        userVerification: options.userVerification,
+        timeout: options.timeout,
+      },
+    });
+  } catch (error) {
+    throw new Error(`Approval cancelled: ${error.message}`);
+  }
+  return {
+    challenge: options.challenge,
+    credential_id: toB64url(credential.rawId),
+    authenticator_data: toB64url(credential.response.authenticatorData),
+    client_data_json: toB64url(credential.response.clientDataJSON),
+    signature: toB64url(credential.response.signature),
+  };
+}
+
+function presenceBanner() {
+  if (app.data.presence !== "missing") return null;
+  return h("div", { class: "banner warn" },
+    h("p", {},
+      h("strong", {}, "Policy changes are not protected by Windows Hello. "),
+      "Any program running as you can open this dashboard and allow a new destination. Run ",
+      h("code", {}, "interpose service enroll"), " to require Windows Hello for changes that widen a policy."));
 }
 
 function toast(message, isError = false) {
@@ -257,7 +309,7 @@ function renderPolicies() {
   const intro = h("p", { class: "lead" }, "A policy says where a secret may be sent. With no policy, every use is denied. A project policy overrides the global one inside this project.");
 
   if (!app.data.policies.length) {
-    return [projectBanner(), head, intro, h("div", { class: "grid-wrap" },
+    return [projectBanner(), presenceBanner(), head, intro, h("div", { class: "grid-wrap" },
       empty("No policies yet", "Secrets without a policy cannot be used.",
         h("button", { class: "btn primary", onclick: () => openPolicyDialog({}) }, "Add policy")))];
   }
@@ -270,7 +322,7 @@ function renderPolicies() {
     sections.push(h("h2", { class: "section-title" }, scope === "project" ? `Project · ${app.data.project.name}` : "Global"));
     sections.push(h("div", { class: "cards" }, policies.map((p) => policyCard(p, overridden(p)))));
   }
-  return [projectBanner(), head, intro, ...sections];
+  return [projectBanner(), presenceBanner(), head, intro, ...sections];
 }
 
 function chips(values, fallback) {

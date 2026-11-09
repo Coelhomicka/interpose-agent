@@ -30,6 +30,14 @@ Fixes from the November 2026 adversarial audit; see `docs/en/SECURITY_AUDIT.md`.
 - The threat model now states that project scopes are not an isolation boundary against
   same-user code.
 - Regression and property-based (Hypothesis) tests for every finding.
+- **[security]** Windows Hello approval for policy changes that widen where a secret can go
+  (new policy, host, method, path, slot or scheme; removed deny or path limit; `allow_exec`).
+  The dashboard asks for a WebAuthn assertion bound to the exact change. `interpose setup`
+  enrolls the key from the private runtime into the vault folder; `interpose service enroll`
+  replaces it. A same-user process holding the control token can no longer widen policy.
+  The dashboard now opens on `http://localhost:<port>`, as WebAuthn requires.
+- **[security]** Elevated service tasks other than install run from the private runtime in
+  `%ProgramFiles%`, not from the user's own install, which the user's processes can modify.
 
 ### Added
 

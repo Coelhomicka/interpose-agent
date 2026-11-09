@@ -22,7 +22,7 @@ tests fail on the code before the fix.
 |---|---|---|---|
 | 1 | Critical | Policy host and connection host could disagree in Host-header proxy mode | Fixed |
 | 2 | High | Project policies do not contain a same-user process | Documented: not a boundary |
-| 3 | High | The service control token lets a same-user process change policies | Open, known gap |
+| 3 | High | The service control token lets a same-user process change policies | Fixed: Windows Hello approval for widening changes |
 | 4 | Medium | Redaction missed common encodings and compressed bodies | Fixed |
 | 5 | Low | Unicode hosts were normalized differently by policy and by the HTTP client | Fixed |
 
@@ -63,17 +63,46 @@ not provide (see the attribution item in the [roadmap](ROADMAP.md)). Instead, th
 real guarantee: a secret can only reach the union of the hosts its policies allow,
 anywhere on the machine. Write the narrowest policy in the global scope.
 
-### 3. Control token (High, open)
+### 3. Control token (High, fixed)
 
 `client\control.token` is readable by the installing user so that `interpose up`
-can open dashboard sessions without a second login. A same-user process can use it
-to open a session and add an allowed host, which defeats egress policy for every
-secret. Values still cannot be read back.
+can open dashboard sessions without a second login. A same-user process could use
+it to open a session and add an allowed host, which defeated egress policy for
+every secret. Values could still not be read back.
 
-This was already listed in the threat model. The planned fix is to require user
-presence (Windows Hello) for dashboard sessions, or at least for changes that widen
-a policy. **Until then, Interpose protects secret values from being read, but it
-does not stop a determined same-user process from rewriting policy.**
+**Fix: user presence for widening changes.** Opening a session still needs no
+second login. Any policy change that could send a secret somewhere new must carry a
+WebAuthn assertion from the operator's authenticator: Windows Hello, which means
+face, fingerprint or PIN.
+- **What counts as widening:** a new policy, or a host, method, path, slot or
+  scheme not covered before. So do removing a deny or a path limit, and enabling
+  `allow_exec`. The check is conservative: whatever is not provably narrower needs
+  approval.
+- **The challenge** is single-use, expires in two minutes, and is bound to the
+  session and to a hash of the exact scope and policy being stored. An approval for
+  one change cannot be spent on another.
+- **The verifier** checks the challenge, the origin (`http://localhost:<port>`),
+  the relying party (`localhost`), the user-present and user-verified flags, the
+  signature (RS256, ES256 or Ed25519) and the signature counter. It needs no new
+  dependencies, and its CBOR parser is bounded and fuzzed.
+- **Enrollment** is where trust comes from. `interpose setup`, or
+  `interpose service enroll`, creates the credential through `webauthn.dll` from
+  the private runtime in `%ProgramFiles%`, and writes its public key into the vault
+  folder. Both places are closed to the user's processes, so they cannot enroll a
+  key of their own. A damaged record keeps approval required instead of turning it
+  off.
+
+Every elevated task except install now also runs from that private runtime instead
+of the user's own (writable) install.
+
+**Residual risks.**
+- A same-user process can make Windows Hello prompt at a moment the operator
+  expects a prompt, and borrow the approval. Approve only right after saving a
+  change yourself.
+- Without enrollment (no Windows Hello on the machine), the dashboard shows a
+  warning and changes are unprotected.
+- Replacing a secret value needs no approval: it reveals nothing, but it can break
+  a working credential.
 
 ### 4. Redaction coverage (Medium, fixed)
 

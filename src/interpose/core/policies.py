@@ -183,6 +183,54 @@ class PolicyDocument(BaseModel):
         return tuple(slot.location() for slot in self.inject)
 
 
+def _pattern_covers(existing: str, candidate: str) -> bool:
+    existing, candidate = existing.strip().lower(), candidate.strip().lower()
+    if existing == "*" or existing == candidate:
+        return True
+    if existing.startswith("*."):
+        suffix = existing[1:]
+        name = candidate[1:] if candidate.startswith("*.") else candidate
+        return "*" not in name and name.endswith(suffix) and len(name) > len(suffix)
+    return False
+
+
+def widens(new: PolicyDocument, old: PolicyDocument | None) -> bool:
+    """Whether storing ``new`` in place of ``old`` could let the secret go anywhere new.
+
+    Conservative: anything not provably narrower or equal counts as widening. A
+    policy that did not exist before always widens.
+    """
+    if old is None:
+        return True
+    old_allow = old.allow.hosts if old.allow else []
+    new_allow = new.allow.hosts if new.allow else []
+    if not all(any(_pattern_covers(o, n) for o in old_allow) for n in new_allow):
+        return True
+    old_deny = {pattern.strip().lower() for pattern in (old.deny.hosts if old.deny else [])}
+    new_deny = {pattern.strip().lower() for pattern in (new.deny.hosts if new.deny else [])}
+    if not old_deny <= new_deny:
+        return True
+    old_methods, new_methods = set(old.normalized_methods()), set(new.normalized_methods())
+    if old_methods and (not new_methods or not new_methods <= old_methods):
+        return True
+    old_schemes = set(old.normalized_schemes()) or {"https"}
+    new_schemes = set(new.normalized_schemes()) or {"https"}
+    if not new_schemes <= old_schemes:
+        return True
+    if old.paths is not None and (new.paths is None or not set(new.paths) <= set(old.paths)):
+        return True
+
+    def slots(document: PolicyDocument) -> set[tuple[str, str]]:
+        return {
+            (slot.kind, (slot.name or "").lower() if slot.kind == "header" else slot.name or "")
+            for slot in document.injection_slots()
+        }
+
+    if not slots(new) <= slots(old):
+        return True
+    return new.allow_exec and not old.allow_exec
+
+
 def _is_loopback_destination(host: str) -> bool:
     try:
         hostname = urlsplit(f"//{host}").hostname

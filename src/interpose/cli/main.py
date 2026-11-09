@@ -566,11 +566,19 @@ def _run_service_task(task: str, **options: str | bool) -> None:
         typer.echo("Windows will ask for administrator approval once.")
     if task == "install":
         typer.echo("Installing: copies a private Python runtime and downloads dependencies (1-3 minutes)...")
+    if task in {"install", "enroll"}:
+        typer.echo("Windows Hello will ask you to confirm once: policy changes that send a secret somewhere "
+                   "new will require it.")
     try:
         if is_elevated():
             code = _elevated_task(task, log_file=log_file, echo=True, **options)
         else:
-            code = run_elevated(arguments)
+            # Every task but install runs from the private runtime in Program Files:
+            # this install is writable by the user's processes, the runtime is not.
+            # Install necessarily runs the code being installed.
+            private = ServiceLayout.default().python_exe
+            trusted = private if task != "install" and private.is_file() else None
+            code = run_elevated(arguments, executable=trusted)
             typer.echo(log_file.read_text(encoding="utf-8", errors="replace"), nl=False)
     except InstallError as exc:
         typer.echo(str(exc), err=True)
@@ -598,6 +606,10 @@ def _elevated_task(task: str, *, log_file: Path, echo: bool = False, **options) 
                         source=options["source"], keep_user_vault=bool(options.get("keep_user_vault")), log=log)
             elif task == "uninstall":
                 uninstall(layout, purge=bool(options.get("purge")), log=log)
+            elif task == "enroll":
+                from ..service.install import enroll_presence
+
+                return 0 if enroll_presence(layout, log) else 1
             elif task in {"start", "stop"}:
                 import subprocess
 
@@ -680,6 +692,16 @@ def service_uninstall(
     if purge and not typer.confirm("Destroy the vault and every secret in it? This cannot be undone"):
         raise typer.Exit(code=1)
     _run_service_task("uninstall", purge=purge)
+
+
+@service_app.command("enroll")
+def service_enroll() -> None:
+    """Enroll (or replace) the Windows Hello key that approves widening policy changes."""
+    if not ServiceLayout.default().installed_marker.is_file():
+        typer.echo("The Interpose service is not installed; run `interpose setup` first.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("Windows will ask for administrator approval, then for Windows Hello.")
+    _run_service_task("enroll")
 
 
 @service_app.command("start")
