@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import tempfile
+import time
 import webbrowser
 from pathlib import Path
 
@@ -425,9 +426,65 @@ def up(
         asyncio.run(serve())
 
 
+def _service_ready(layout: ServiceLayout) -> bool:
+    """The service runs and the endpoint it published is its own (not a stale file)."""
+    from ..service.layout import ServiceEndpoint
+    from ..service.win32 import service_pid
+
+    pid = service_pid()
+    if pid is None or not layout.endpoint_file.is_file():
+        return False
+    try:
+        return ServiceEndpoint.from_json(layout.endpoint_file.read_text(encoding="utf-8")).pid == pid
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def _ensure_service_running() -> bool:
+    """Start the service if needed; True when this call started it."""
+    from ..service.win32 import start_service
+
+    layout = ServiceLayout.default()
+    if _service_ready(layout):
+        return False
+    typer.echo("Starting Interpose ...")
+    try:
+        start_service()
+    except PermissionError as exc:
+        typer.echo(
+            "This installation cannot be started without administrator rights (it predates on-demand start). "
+            "Run `interpose setup` again once to update it.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"Could not start the Interpose service: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    deadline = time.monotonic() + 30
+    while not _service_ready(layout):
+        if time.monotonic() > deadline:
+            typer.echo(f"Interpose did not come up within 30 seconds; see {layout.log_file} (administrator).",
+                       err=True)
+            raise typer.Exit(code=1)
+        time.sleep(0.25)
+    return True
+
+
+def _stop_service_quietly() -> None:
+    from ..service.win32 import service_pid, stop_service
+
+    with contextlib.suppress(OSError):
+        stop_service()
+    deadline = time.monotonic() + 15
+    while service_pid() is not None and time.monotonic() < deadline:
+        time.sleep(0.25)
+
+
 def _open_service_dashboard(working_directory: Path, open_browser: bool) -> None:
     from ..service.client import ServiceClient, ServiceUnavailable
+    from ..service.win32 import service_pid
 
+    started_here = _ensure_service_running()
     try:
         client = ServiceClient.connect()
         client.verify_identity()
@@ -445,6 +502,20 @@ def _open_service_dashboard(working_directory: Path, open_browser: bool) -> None
     typer.echo("")
     if open_browser:
         webbrowser.open(login_url)
+    if not started_here:
+        typer.echo("  Interpose was already running (another `interpose up`?); leaving it running.")
+        return
+
+    # Like `aspire run`: Interpose lives as long as this command does.
+    typer.echo("  Press Ctrl+C to stop Interpose.", err=True)
+    try:
+        while service_pid() is not None:
+            time.sleep(1)
+        typer.echo("Interpose stopped.")
+    except KeyboardInterrupt:
+        typer.echo("Stopping Interpose ...")
+        _stop_service_quietly()
+        typer.echo("Interpose stopped.")
 
 
 # --------------------------------------------------------------------------- service
@@ -589,12 +660,25 @@ def service_uninstall(
 
 @service_app.command("start")
 def service_start() -> None:
-    _run_service_task("start")
+    """Start the service in the background (`interpose up` does this and stops it on exit)."""
+    if _ensure_service_running():
+        typer.echo("Interpose is running. Stop it with `interpose service stop`.")
+    else:
+        typer.echo("Interpose was already running.")
 
 
 @service_app.command("stop")
 def service_stop() -> None:
-    _run_service_task("stop")
+    """Stop the service."""
+    from ..service.win32 import stop_service
+
+    try:
+        stop_service()
+    except PermissionError:
+        _run_service_task("stop")
+        return
+    _stop_service_quietly()
+    typer.echo("Interpose stopped.")
 
 
 @service_app.command("status")

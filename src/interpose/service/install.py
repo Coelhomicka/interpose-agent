@@ -288,6 +288,34 @@ def install_runtime(layout: ServiceLayout, source: str, log: Log) -> None:
     _run([python, "-I", "-c", "import interpose.service.host"], log)
 
 
+def grant_start_stop(user_sid: str, log: Log) -> None:
+    """Let the installing user start and stop this one service, nothing more.
+
+    The service starts on demand from ``interpose up`` (and stops with Ctrl+C),
+    which runs unelevated. By default only administrators may start a service.
+    The added entry grants start, stop, query status and read control; it does
+    not grant changing the service's configuration or its binary path.
+    """
+    current = _run(["sc", "sdshow", SERVICE_NAME], log).stdout.strip().splitlines()[-1].strip()
+    updated = with_start_stop_ace(current, user_sid)
+    if updated != current:
+        _run(["sc", "sdset", SERVICE_NAME, updated], log)
+
+
+def with_start_stop_ace(sddl: str, user_sid: str) -> str:
+    """Add an allow entry for start, stop, query status and read control to a DACL.
+
+    The entry goes before the first existing one, after any DACL flags (``D:P``).
+    """
+    ace = f"(A;;RPWPLCRC;;;{user_sid})"
+    if ace in sddl:
+        return sddl
+    if not sddl.startswith("D:") or "(" not in sddl:
+        raise InstallError(f"unexpected service security descriptor: {sddl}")
+    first = sddl.index("(")
+    return sddl[:first] + ace + sddl[first:]
+
+
 def create_service(layout: ServiceLayout, log: Log) -> None:
     if _service_exists():
         _stop_service(log)
@@ -296,7 +324,7 @@ def create_service(layout: ServiceLayout, log: Log) -> None:
         _wait_for(lambda: not _service_exists(), 15)
     command = subprocess.list2cmdline([str(layout.python_exe), "-I", "-m", "interpose.service.host"])
     log(f"Registering the service as {SERVICE_ACCOUNT} ...")
-    _run(["sc", "create", SERVICE_NAME, "binPath=", command, "start=", "auto", "obj=", SERVICE_ACCOUNT,
+    _run(["sc", "create", SERVICE_NAME, "binPath=", command, "start=", "demand", "obj=", SERVICE_ACCOUNT,
           "DisplayName=", SERVICE_DISPLAY_NAME], log)
     _run(["sc", "description", SERVICE_NAME,
           "Holds Interpose secrets and injects them into approved requests from AI agents."], log)
@@ -388,12 +416,17 @@ def install(
         _stop_service(log)
     install_runtime(layout, source, log)
     create_service(layout, log)
+    grant_start_stop(user_sid, log)
     prepare_data(layout, user_sid, log)
     migrate_user_vault(layout, user_home, keep=keep_user_vault, log=log)
+    # Start once to prove the install works, then leave it stopped: like Aspire,
+    # Interpose runs only while `interpose up` does.
     start_service(layout, log)
-    marker = layout.data_dir / "installed.json"
-    marker.write_text(json.dumps({"user_sid": user_sid, "source": source, "at": time.time()}), encoding="utf-8")
-    log("Interpose service installed.")
+    _stop_service(log)
+    layout.installed_marker.write_text(
+        json.dumps({"user_sid": user_sid, "source": source, "at": time.time()}), encoding="utf-8"
+    )
+    log("Interpose service installed. It is stopped; `interpose up` starts it.")
 
 
 def uninstall(layout: ServiceLayout, *, purge: bool, log: Log) -> None:
@@ -403,6 +436,7 @@ def uninstall(layout: ServiceLayout, *, purge: bool, log: Log) -> None:
         _stop_service(log)
         _run(["sc", "delete", SERVICE_NAME], log)
         log("Service removed.")
+    layout.installed_marker.unlink(missing_ok=True)
     if layout.program_dir.exists():
         _remove_tree(layout.program_dir, log)
         log(f"Removed {layout.program_dir}.")

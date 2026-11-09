@@ -72,12 +72,12 @@ What each zone may do:
 
 | | Development mode | Service mode |
 | --- | --- | --- |
-| Started by | `interpose up` (foreground, one terminal) | `interpose setup`, once; then the Windows service manager |
+| Started by | `interpose up` (foreground, one terminal) | `interpose up`, which starts the installed service and stops it on Ctrl+C; never at boot |
 | Runs as | You | `NT SERVICE\Interpose`, token reduced to `SeChangeNotifyPrivilege` |
 | Code | Your virtual environment | Private copy under `%ProgramFiles%\Interpose` |
 | Vault and key | `%USERPROFILE%\.interpose` | `%ProgramData%\Interpose\vault` |
 | An agent running as you can read the vault | **Yes** | No — the OS denies it |
-| `interpose up` | Starts broker + dashboard, prints a login link | Verifies the service owns both ports, asks it for a login link |
+| `interpose up` | Starts broker + dashboard, prints a login link | Starts the service, verifies it owns both ports, asks it for a login link, stops it on Ctrl+C |
 | Platforms | Windows, Linux, macOS | Windows |
 
 Development mode is the right place to try Interpose and to hack on it. It enforces policy but does
@@ -103,13 +103,13 @@ sequenceDiagram
     UAC->>E: start installer
     E->>E: refuse a pre-existing data folder not owned by Administrators or containing links
     E->>E: copy Python + pip install Interpose into Program Files
-    E->>SCM: create service as NT SERVICE\Interpose, restart on failure
+    E->>SCM: create service as NT SERVICE\Interpose, manual start, restart on failure
+    E->>SCM: let your account start and stop this service
     E->>E: ACL vault/ (service, SYSTEM, admins) and client/ (+ you, read-only)
     E->>E: move the development vault, overwrite and delete your copy
-    E->>SCM: start
-    SCM->>S: run broker + dashboard
-    S->>S: publish endpoint.json and a fresh control.token
+    E->>SCM: start once to verify, then stop
     E-->>CLI: log + exit code
+    Note over U,S: later: interpose up starts it, Ctrl+C stops it
 ```
 
 The installer copies the Python runtime instead of reusing yours because your interpreter lives in

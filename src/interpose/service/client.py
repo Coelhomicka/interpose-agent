@@ -18,6 +18,8 @@ import httpx
 from .layout import ServiceEndpoint, ServiceLayout
 from .win32 import listener_pid, service_pid
 
+NOT_RUNNING = "Interpose is not running. Start it with `interpose up` and keep that terminal open."
+
 
 class ServiceUnavailable(RuntimeError):
     pass
@@ -36,7 +38,7 @@ class ServiceClient:
             token = layout.control_token_file.read_text(encoding="utf-8").strip()
         except (OSError, ValueError, KeyError) as exc:
             raise ServiceUnavailable(
-                "the Interpose service is installed but not running; start it with `interpose service start`"
+                NOT_RUNNING
             ) from exc
         return cls(endpoint=endpoint, control_token=token)
 
@@ -44,7 +46,7 @@ class ServiceClient:
         """Refuse to continue unless the dashboard port belongs to the service."""
         expected = service_pid()
         if expected is None:
-            raise ServiceUnavailable("the Interpose service is not running; start it with `interpose service start`")
+            raise ServiceUnavailable(NOT_RUNNING)
         for url in (self.endpoint.dashboard_url, self.endpoint.proxy_url):
             port = urlsplit(url).port
             actual = listener_pid(port) if port else None

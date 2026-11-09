@@ -73,12 +73,12 @@ O que cada zona pode fazer:
 
 | | Modo de desenvolvimento | Modo serviço |
 | --- | --- | --- |
-| Iniciado por | `interpose up` (em primeiro plano, num terminal) | `interpose setup`, uma vez; depois o gerenciador de serviços do Windows |
+| Iniciado por | `interpose up` (em primeiro plano, num terminal) | `interpose up`, que inicia o serviço instalado e o para no Ctrl+C; nunca no boot |
 | Roda como | Você | `NT SERVICE\Interpose`, com o token reduzido a `SeChangeNotifyPrivilege` |
 | Código | Seu ambiente virtual | Cópia própria em `%ProgramFiles%\Interpose` |
 | Vault e chave | `%USERPROFILE%\.interpose` | `%ProgramData%\Interpose\vault` |
 | Um agente rodando como você consegue ler o vault | **Sim** | Não — o sistema operacional nega |
-| `interpose up` | Sobe broker + painel e imprime um link de login | Confere que o serviço é dono das duas portas e pede a ele um link de login |
+| `interpose up` | Sobe broker + painel e imprime um link de login | Inicia o serviço, confere que ele é dono das duas portas, pede um link de login e o para no Ctrl+C |
 | Plataformas | Windows, Linux, macOS | Windows |
 
 O modo de desenvolvimento é o lugar certo para experimentar o Interpose e para trabalhar no código.
@@ -104,13 +104,13 @@ sequenceDiagram
     UAC->>E: inicia o instalador
     E->>E: recusa pasta de dados pré-existente que não seja de Administrators ou que tenha links
     E->>E: copia o Python + pip install do Interpose em Program Files
-    E->>SCM: cria o serviço como NT SERVICE\Interpose, com reinício em falha
+    E->>SCM: cria o serviço como NT SERVICE\Interpose, início manual, reinício em falha
+    E->>SCM: permite que a sua conta inicie e pare este serviço
     E->>E: ACL em vault/ (serviço, SYSTEM, admins) e client/ (+ você, só leitura)
     E->>E: move o vault de desenvolvimento, sobrescreve e apaga a sua cópia
-    E->>SCM: inicia
-    SCM->>S: roda broker + painel
-    S->>S: publica endpoint.json e um control.token novo
+    E->>SCM: inicia uma vez para verificar, depois para
     E-->>CLI: log + código de saída
+    Note over U,S: depois: interpose up inicia, Ctrl+C para
 ```
 
 O instalador copia o runtime do Python em vez de reaproveitar o seu porque o seu interpretador fica

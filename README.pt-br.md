@@ -118,8 +118,12 @@ interpose setup        # um prompt de administrador (UAC); nunca mais depois dis
 O `setup` copia um runtime Python próprio e o Interpose para `%ProgramFiles%\Interpose`, registra o
 serviço `Interpose` na conta virtual `NT SERVICE\Interpose` (sem senha, sem login) e move o seu
 vault para `%ProgramData%\Interpose\vault`, que só essa conta, o SYSTEM e administradores elevados
-conseguem abrir. A cópia no seu perfil é destruída. A partir daí, o `interpose up` só abre o painel
-do serviço em execução, e o `interpose run` aponta as sessões para ele. Nada mais muda para o agente.
+conseguem abrir. A cópia no seu perfil é destruída.
+
+O serviço **não** inicia com o Windows. Como o `aspire run`, o `interpose up` inicia o serviço, abre o
+painel e fica rodando no terminal; **Ctrl+C para o serviço**. O `setup` permite que a sua conta
+inicie e pare só esse serviço, então nada disso exige administrador. Enquanto ele roda, o
+`interpose run` aponta as sessões para ele. Nada mais muda para o agente.
 
 Rode o `setup` você mesmo, não de dentro de uma sessão de agente: até o serviço existir, o código de
 onde ele instala ainda pode ser alterado por esse agente. Nunca rode um agente elevado; um
@@ -147,8 +151,9 @@ interpose up
 
 Isso sobe o broker e um painel local num único processo e abre o painel no navegador, no estilo do
 painel do .NET Aspire. Com o [serviço](#proteja-o-vault-instale-o-serviço-windows) instalado, o
-`interpose up` não sobe nada: ele confere que o serviço é dono das duas portas, pede a ele um link de
-login de uso único vinculado à pasta atual e o abre. A partir dali você pode:
+`interpose up` inicia o serviço, confere que ele é dono das duas portas, pede a ele um link de login
+de uso único vinculado à pasta atual e o abre; o Ctrl+C para o serviço de novo. A partir dali você
+pode:
 
 - **registrar a pasta como projeto** — os segredos e políticas dele só valem quando o runtime roda
   ali;

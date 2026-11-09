@@ -61,6 +61,11 @@ class ServiceLayout:
         return self.client_dir / "control.token"
 
     @property
+    def installed_marker(self) -> Path:
+        """Written by ``interpose setup``; readable by the user, unlike the vault."""
+        return self.client_dir / "installed.json"
+
+    @property
     def log_file(self) -> Path:
         return self.vault_dir / "service.log"
 
@@ -81,7 +86,10 @@ class ServiceEndpoint:
 
 
 def service_installed(layout: ServiceLayout | None = None) -> bool:
-    """True when an installed service has published its endpoint.
+    """True when ``interpose setup`` installed the service, running or not.
+
+    The service starts on demand (``interpose up``) and withdraws its endpoint
+    when it stops, so installation is recorded by a separate marker.
 
     ``INTERPOSE_HOME`` forces the self-hosted development mode, which is also what
     the test suite and the service itself rely on.
@@ -90,4 +98,4 @@ def service_installed(layout: ServiceLayout | None = None) -> bool:
         return False
     if os.name != "nt":
         return False
-    return (layout or ServiceLayout.default()).endpoint_file.is_file()
+    return (layout or ServiceLayout.default()).installed_marker.is_file()

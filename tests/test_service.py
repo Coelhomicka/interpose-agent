@@ -247,7 +247,8 @@ def test_proxy_placeholder_without_broker_fails():
 
 def test_service_mode_is_off_when_interpose_home_is_set(tmp_path, monkeypatch):
     layout = ServiceLayout(program_dir=tmp_path / "program", data_dir=tmp_path / "data")
-    publish_endpoint(layout, ServiceEndpoint(BROKER, DASHBOARD, 1), CONTROL)
+    layout.client_dir.mkdir(parents=True)
+    layout.installed_marker.write_text("{}", encoding="utf-8")
 
     monkeypatch.setenv("INTERPOSE_HOME", str(tmp_path / "dev"))
     assert service_installed(layout) is False
@@ -255,7 +256,11 @@ def test_service_mode_is_off_when_interpose_home_is_set(tmp_path, monkeypatch):
     # The service exists only on Windows; elsewhere development mode is the only mode.
     assert service_installed(layout) is (os.name == "nt")
 
+    # A stopped service has no endpoint but is still installed.
+    publish_endpoint(layout, ServiceEndpoint(BROKER, DASHBOARD, 1), CONTROL)
     withdraw_endpoint(layout)
+    assert service_installed(layout) is (os.name == "nt")
+    layout.installed_marker.unlink()
     assert service_installed(layout) is False
 
 
@@ -385,3 +390,18 @@ def test_default_source_pins_the_commit_of_a_git_install(monkeypatch):
     assert installer.default_source() == (
         "git+https://github.com/Coelhomicka/interpose-agent.git@8e56e15c26229dd87eb61491a24dfc421ded02c6"
     )
+
+
+@pytest.mark.parametrize(
+    ("sddl", "expected"),
+    [
+        ("D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCLCSWLOCRRC;;;IU)S:(AU;FA;CCDCLC;;;WD)",
+         "D:(A;;RPWPLCRC;;;S-1-5-21-1)(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCLCSWLOCRRC;;;IU)S:(AU;FA;CCDCLC;;;WD)"),
+        ("D:P(A;;FA;;;SY)", "D:P(A;;RPWPLCRC;;;S-1-5-21-1)(A;;FA;;;SY)"),
+    ],
+)
+def test_start_stop_right_is_added_once(sddl, expected):
+    once = installer.with_start_stop_ace(sddl, "S-1-5-21-1")
+
+    assert once == expected
+    assert installer.with_start_stop_ace(once, "S-1-5-21-1") == once
