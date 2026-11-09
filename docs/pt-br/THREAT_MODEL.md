@@ -23,14 +23,14 @@ O modelo preferido é a execução só com referências: processos não confiáv
 | Token de controle do serviço | Ainda não protegido | O token que os clientes usam para pedir links de login no painel é legível pelo usuário que instalou, então um processo do mesmo usuário pode abrir uma sessão no painel e alterar políticas ou trocar valores (nunca lê-los). Exigir presença do usuário com o Windows Hello nas sessões do painel é a correção planejada. |
 | Acesso à API administrativa | Parcialmente protegido | Exige um token bearer gerado a cada início, impresso no terminal do operador e nunca gravado. Um processo do mesmo usuário que consiga ler o terminal do operador ou a memória da API ainda pode obtê-lo. |
 | Acesso ao painel | Parcialmente protegido | Link de login de uso único trocado por um cookie `HttpOnly` e `SameSite=Strict`; checagens de `Host` no loopback e de mesma origem; token CSRF por sessão em toda alteração; CSP restritiva; valores só de escrita. Um processo do mesmo usuário que leia o terminal antes de o operador abrir o link, ou que controle o navegador já logado do operador, consegue agir como o operador. |
-| Acesso a segredos de outro projeto | Protegido em sessões gerenciadas | O projeto ativo vem do registro do operador, não de arquivos do workspace. Os textos cifrados de projeto ficam vinculados ao escopo pelos dados associados do AES-GCM. |
+| Acesso a segredos de outro projeto | Não é fronteira de segurança | Os textos cifrados de projeto ficam vinculados ao escopo pelos dados associados do AES-GCM, e o `interpose run` escolhe o projeto pelo registro do operador. Mas o broker não sabe qual processo está chamando, então um processo do mesmo usuário pode usar a rota de qualquer projeto (`/p/{id}/proxy/...`) ou a global. Escopos organizam a configuração: os hosts que um segredo alcança são a união de todas as políticas escritas para ele, e uma política de projeto mais restrita que a global não contém nada. |
 | Reflexo parcial pelo destino | Não protegido | Algumas APIs ecoam a chave mascarada em erros (`sk_test_****abcd`). O mascaramento por valor exato não pega ecos parciais, então alguns caracteres podem chegar ao agente. |
 | Acesso a listeners do loopback via navegador | Protegido | O broker e a API rejeitam requisições com header `Origin` ou `Sec-Fetch-Site` cross-site e rejeitam headers `Host` fora do loopback, bloqueando CSRF e DNS rebinding vindos de páginas web. |
 | `/proc` ou inspeção de processos | Protegido | Sessões só com referências não têm argumentos secretos, e o `interpose-exec` entrega os segredos ao curl pela entrada padrão (`--config -`), nunca nos argumentos. |
 | Inspeção da memória de processos | Protegido no Windows com o serviço; não protegido no modo de desenvolvimento | O processo do serviço pertence a `NT SERVICE\Interpose`; o Windows não deixa os processos do usuário abri-lo, nem para consultas limitadas. No modo de desenvolvimento o broker roda como o usuário e a memória dele é legível pelos processos do usuário. |
 | Agente elevado | Não protegido | Um administrador consegue ler tudo. O `interpose run` se recusa a iniciar um agente a partir de um terminal elevado, a menos que `--allow-elevated` seja passado. |
 | Exfiltração direta pela rede | Ainda não protegido | O transporte local explícito não impede um agente de abrir sockets diretos. O controle de saída no sistema operacional continua obrigatório. |
-| Exfiltração pelo broker HTTP | Parcialmente protegido | Políticas de destino, método e esquema são aplicadas antes da resolução. Faltam controles de DNS rebinding e de caminho. |
+| Exfiltração pelo broker HTTP | Protegido para destinos aprovados pela política | Políticas de destino, método, esquema, caminho e slot são aplicadas antes da resolução. O destino é analisado de forma estrita (um único hostname ASCII ou IP e uma porta opcional; sem userinfo, caminho, query, fragmento ou Unicode), e a URL que o cliente vai discar é reanalisada e precisa ser igual à aprovada pela política, então `#`, `?`, `@`, separadores codificados ou segmentos `..` não desviam a requisição. Padrões de host são exatos ou com `*.` no primeiro rótulo; globs como `api.*` são recusados. |
 | Tráfego HTTPS | Ainda não protegido | `CONNECT` é rejeitado porque um túnel TLS opaco não permite substituir referências com segurança. |
 | Redirecionamentos HTTP | Protegido | Redirecionamentos automáticos do destino estão desativados. |
 | Referências URL-encoded | Protegido em query/formulário HTTP | O broker decodifica as referências, avalia a política, resolve e recodifica os valores com segurança. |
@@ -39,7 +39,7 @@ O modelo preferido é a execução só com referências: processos não confiáv
 | Logs e auditoria | Protegido para valores resolvidos conhecidos | Valores e URLs resolvidos são mascarados; os registros de auditoria contêm só referências e metadados. |
 | Atribuição na auditoria | Ainda não protegido | O broker não autentica clientes no loopback, então não consegue verificar qual processo enviou a requisição. Os registros são confiáveis sobre o que aconteceu, não sobre quem fez. |
 | Stack traces | Parcialmente protegido | Os erros do broker são mascarados. Stack traces de aplicações não confiáveis contêm só referências em sessões gerenciadas. |
-| Reflexo na resposta | Parcialmente protegido | Valores resolvidos conhecidos são mascarados em headers e corpos, inclusive corpos binários que não são UTF-8. Reflexos codificados ou transformados podem escapar do mascaramento exato; os slots de injeção mantêm referências fora de corpos que o destino transformaria. |
+| Reflexo na resposta | Parcialmente protegido | Valores resolvidos conhecidos são mascarados sem diferenciar maiúsculas em headers e corpos: como enviados e aparados, percent-encoded, escapados em JSON, hex e base64 (puro, URL-safe e embutido em qualquer alinhamento, como no Basic auth). O broker só oferece `gzip`/`deflate` ao destino e recusa qualquer outro `Content-Encoding`, então o mascaramento nunca analisa um corpo comprimido. Um host permitido que transforme o valor de propósito (cifrar, dividir, recodificar em outro charset) ainda pode devolvê-lo; slots de injeção e `paths` restritos limitam isso a hosts em que o operador já confia com o segredo. |
 | Exfiltração por DNS | Ainda não protegido | O DNS não é controlado no nível do sistema operacional. |
 | Certificate pinning | Ainda não protegido | A futura terminação TLS transparente não vai funcionar para clientes com pinning sem integração explícita. |
 | Uso criptográfico local | Futuro | Assinatura, mTLS, SSH e SigV4 exigem brokers de operação; devolver material de chave é proibido. |
@@ -49,7 +49,7 @@ O modelo preferido é a execução só com referências: processos não confiáv
 A implementação atual garante que:
 
 1. nenhuma operação pública da API ou da CLI retorna um valor de segredo armazenado;
-2. as políticas do broker — host, método, esquema, caminho e slot de injeção — são avaliadas antes da resolução do segredo;
+2. as políticas do broker — host, método, esquema, caminho e slot de injeção — são avaliadas antes da resolução do segredo, sobre exatamente o host, a porta e o caminho para onde a requisição é enviada;
 3. os ambientes dos filhos gerenciados contêm as referências declaradas, e não valores resolvidos;
 4. o launcher não repassa `INTERPOSE_MASTER_KEY` nem `INTERPOSE_HOME` aos filhos;
 5. o armazenamento local de segredos usa criptografia autenticada;
@@ -68,4 +68,7 @@ A implementação atual não garante proteção contra:
 3. acesso direto à rede que contorne o transporte local;
 4. canais encobertos, DNS, QUIC ou transportes não gerenciados;
 5. o que o `curl` faz com um segredo entregue pelo modo limitado `interpose-exec` enquanto roda;
-6. SDKs que exigem o valor em texto puro localmente para validar, derivar, cifrar ou assinar.
+6. SDKs que exigem o valor em texto puro localmente para validar, derivar, cifrar ou assinar;
+7. isolamento entre projetos: um processo do mesmo usuário pode usar as políticas de qualquer projeto (veja *Acesso a segredos de outro projeto*).
+
+Revisão independente: veja a [auditoria de segurança](SECURITY_AUDIT.md).
