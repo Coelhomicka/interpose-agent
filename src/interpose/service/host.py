@@ -23,6 +23,7 @@ import uvicorn
 
 from ..config import RuntimeConfig
 from ..container import create_container
+from ..core.presence import PresenceVerifier
 from ..dashboard.app import DashboardAuth, DashboardContext, create_dashboard_app
 from ..proxy.http_proxy import create_proxy_app
 from . import SERVICE_NAME
@@ -76,6 +77,7 @@ def run_host(
         DashboardContext(working_directory=None, proxy_url=proxy_url, follow_project=False),
         DashboardAuth(default_token=False),
         control_token=control_token,
+        presence=PresenceVerifier(layout.presence_file),
     )
     servers = [
         uvicorn.Server(uvicorn.Config(create_proxy_app(container), host="127.0.0.1", port=proxy_port,

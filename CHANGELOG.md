@@ -10,6 +10,35 @@ Entries that change a security guarantee are marked **[security]**.
 
 ## [Unreleased]
 
+### Security
+
+Fixes from the November 2026 adversarial audit; see `docs/en/SECURITY_AUDIT.md`.
+
+- **[security]** Critical: in Host-header and absolute-form proxy mode, a `Host` value
+  could match a wildcard allow pattern as text while the HTTP client connected to a different
+  host, which sent the injected credential to that host. Destinations are now parsed strictly,
+  and the URL the client dials is re-parsed and must equal the URL the policy approved.
+- **[security]** Allow-host patterns are label-aware: exact `host[:port]`, a leading
+  `*.example.com` (subdomains only), or `*`. Glob forms like `api.*` are refused, and a stored
+  policy using one now denies.
+- **[security]** Paths with dot segments, or with an encoded `?` or `#`, are refused instead of
+  being normalized after the policy check.
+- **[security]** Redaction also covers JSON-escaped, hex, URL-safe base64 and embedded base64
+  (as in Basic auth), case-insensitively. The broker offers only `gzip, deflate` upstream and
+  refuses any other response encoding, so it never scans a compressed body.
+- **[security]** Non-ASCII hostnames are refused; send IDNA `xn--` labels.
+- The threat model now states that project scopes are not an isolation boundary against
+  same-user code.
+- Regression and property-based (Hypothesis) tests for every finding.
+- **[security]** Windows Hello approval for policy changes that widen where a secret can go
+  (new policy, host, method, path, slot or scheme; removed deny or path limit; `allow_exec`).
+  The dashboard asks for a WebAuthn assertion bound to the exact change. `interpose setup`
+  enrolls the key from the private runtime into the vault folder; `interpose service enroll`
+  replaces it. A same-user process holding the control token can no longer widen policy.
+  The dashboard now opens on `http://localhost:<port>`, as WebAuthn requires.
+- **[security]** Elevated service tasks other than install run from the private runtime in
+  `%ProgramFiles%`, not from the user's own install, which the user's processes can modify.
+
 ### Added
 
 - `interpose up`: starts the broker and a local configuration dashboard together and opens the

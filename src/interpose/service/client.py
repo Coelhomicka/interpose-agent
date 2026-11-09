@@ -73,7 +73,11 @@ class ServiceClient:
 
     def login_url(self, working_directory: Path) -> str:
         path = self._request("POST", "/control/login", json={"cwd": str(working_directory)})["path"]
-        return f"{self.endpoint.dashboard_url}{path}"
+        # The browser uses ``localhost``, not the IP: WebAuthn (Windows Hello)
+        # refuses IP addresses as a relying party, and the session cookie is bound
+        # to the host name the login link used.
+        port = urlsplit(self.endpoint.dashboard_url).port
+        return f"http://localhost:{port}{path}"
 
     def project_id(self, working_directory: Path) -> str | None:
         return self._request("GET", "/control/project", params={"cwd": str(working_directory)})["id"]

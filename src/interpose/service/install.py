@@ -75,15 +75,20 @@ class SHELLEXECUTEINFOW(ctypes.Structure):
     ]
 
 
-def run_elevated(arguments: list[str]) -> int:
-    """Run ``python -I <arguments>`` through a UAC prompt and wait for it."""
+def run_elevated(arguments: list[str], *, executable: Path | None = None) -> int:
+    """Run ``python -I <arguments>`` through a UAC prompt and wait for it.
+
+    ``executable`` defaults to the current interpreter. Pass the service's private
+    runtime when it exists: the user's own install is writable by the user's
+    processes, so running it elevated would hand them administrator rights.
+    """
     see_mask_nocloseprocess = 0x40
     sw_hide = 0
     info = SHELLEXECUTEINFOW()
     info.cbSize = ctypes.sizeof(info)
     info.fMask = see_mask_nocloseprocess
     info.lpVerb = "runas"
-    info.lpFile = sys.executable
+    info.lpFile = str(executable or sys.executable)
     info.lpParameters = subprocess.list2cmdline(["-I", *arguments])
     info.lpDirectory = str(Path.cwd())
     info.nShow = sw_hide
@@ -392,6 +397,28 @@ def migrate_user_vault(layout: ServiceLayout, user_home: Path, *, keep: bool, lo
     log(f"Destroyed the copy in {source}.")
 
 
+def enroll_presence(layout: ServiceLayout, log: Log) -> bool:
+    """Enroll Windows Hello for policy approvals, using the private runtime.
+
+    The enrollment program runs from ``%ProgramFiles%`` and writes into the vault
+    folder, both closed to the user's processes. Returns whether it succeeded.
+    """
+    if not is_elevated():
+        raise InstallError("enrollment must run elevated")
+    log("Windows Hello: confirm with your face, fingerprint or PIN to protect policy changes ...")
+    result = subprocess.run(
+        [str(layout.python_exe), "-I", "-m", "interpose.service.presence_enroll", "--out", str(layout.presence_file)],
+        capture_output=True, text=True, check=False,
+    )
+    for line in (result.stdout + result.stderr).splitlines():
+        log(f"  {line}")
+    if result.returncode != 0:
+        log("Windows Hello was not enrolled. Policy changes will not require it until you run "
+            "`interpose service enroll`.")
+        return False
+    return True
+
+
 def start_service(layout: ServiceLayout, log: Log) -> None:
     log("Starting the service ...")
     _run(["sc", "start", SERVICE_NAME], log)
@@ -419,6 +446,10 @@ def install(
     grant_start_stop(user_sid, log)
     prepare_data(layout, user_sid, log)
     migrate_user_vault(layout, user_home, keep=keep_user_vault, log=log)
+    if layout.presence_file.is_file():
+        log("Windows Hello is already enrolled for policy approvals.")
+    else:
+        enroll_presence(layout, log)
     # Start once to prove the install works, then leave it stopped: like Aspire,
     # Interpose runs only while `interpose up` does.
     start_service(layout, log)
