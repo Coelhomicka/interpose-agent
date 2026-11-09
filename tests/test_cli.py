@@ -74,3 +74,28 @@ def test_policy_add_and_list(runtime_config, tmp_path):
     assert "secret://apichave/teste" in add_result.output
     assert list_result.exit_code == 0, list_result.output
     assert "secret://apichave/teste" in list_result.output
+
+
+def test_bare_command_prints_the_banner_and_how_to_start():
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "interpose up" in result.output
+    assert "interpose agents install" in result.output
+
+
+def test_banner_falls_back_to_plain_text_without_unicode():
+    import io
+
+    from rich.console import Console
+
+    from interpose.cli import banner
+
+    class Cp1252(io.StringIO):
+        encoding = "cp1252"
+
+    stream = Cp1252()
+    banner.print_banner(Console(file=stream, width=100))
+
+    assert "Interpose v" in stream.getvalue()
+    assert "█" not in stream.getvalue()

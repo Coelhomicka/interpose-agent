@@ -27,6 +27,7 @@ from ..session.isolation.base import IsolationError
 from ..session.isolation.factory import create_isolation_backend
 from ..session.launcher import SessionLauncher, SessionLaunchError
 from ..session.profile import SessionProfile, SessionProfileError
+from .banner import print_banner, print_fields
 
 app = typer.Typer(add_completion=False, help="Administrative CLI for Interpose")
 secret_app = typer.Typer(add_completion=False, help="Secret management commands")
@@ -49,6 +50,24 @@ app.add_typer(policy_app, name="policy")
 app.add_typer(isolation_app, name="isolation")
 app.add_typer(service_app, name="service")
 app.add_typer(agents_app, name="agents")
+
+
+@app.callback(invoke_without_command=True)
+def _main(ctx: typer.Context) -> None:
+    """Credential interposition for untrusted AI agents."""
+    if ctx.invoked_subcommand is not None:
+        return
+    print_banner()
+    commands = [
+        ("Start", "interpose up", "start Interpose and open the dashboard (Ctrl+C stops it)"),
+        ("Run", "interpose run --profile session.yaml -- <agent>", ""),
+        ("Teach", "interpose agents install", "instructions for Claude, Codex, Cursor, Devin..."),
+        ("Protect", "interpose setup", "Windows: move the vault into an OS service"),
+        ("Help", "interpose --help", ""),
+    ]
+    width = max(len(command) for _, command, note in commands if note)
+    print_fields([(label, f"{command.ljust(width)}   {note}".rstrip()) for label, command, note in commands])
+    typer.echo("")
 
 
 def _container():
@@ -390,13 +409,15 @@ def up(
     login_url = f"http://127.0.0.1:{dashboard_port}/login?t={auth.login_token}"
 
     project = container.project
-    typer.echo("")
-    typer.secho("  Interpose", bold=True)
-    typer.echo(f"  Project:    {project.name} ({project.root})" if project else
-               f"  Project:    none - global scope only ({working_directory})")
-    typer.echo(f"  Proxy:      {proxy_url}")
-    typer.echo(f"  Dashboard:  {login_url}")
-    typer.echo("              (single-use login link; restart for a new one)")
+    print_banner()
+    print_fields([
+        ("Mode", "development"),
+        ("Project",
+         f"{project.name} ({project.root})" if project else f"none - global scope only ({working_directory})"),
+        ("Proxy", proxy_url),
+        ("Dashboard", login_url),
+    ])
+    typer.echo("               single-use login link; restart for a new one")
     typer.echo("")
     if os.name == "nt":
         typer.secho(
@@ -493,12 +514,14 @@ def _open_service_dashboard(working_directory: Path, open_browser: bool) -> None
     except ServiceUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    typer.echo("")
-    typer.secho("  Interpose (service)", bold=True)
-    typer.echo(f"  Project:    {project_id or 'none - global scope only'} ({working_directory})")
-    typer.echo(f"  Proxy:      {client.proxy_base(working_directory)}")
-    typer.echo(f"  Dashboard:  {login_url}")
-    typer.echo("              (single-use login link, valid for 5 minutes)")
+    print_banner()
+    print_fields([
+        ("Mode", "service (NT SERVICE\\Interpose)"),
+        ("Project", f"{project_id or 'none - global scope only'} ({working_directory})"),
+        ("Proxy", client.proxy_base(working_directory)),
+        ("Dashboard", login_url),
+    ])
+    typer.echo("               single-use login link, valid for 5 minutes")
     typer.echo("")
     if open_browser:
         webbrowser.open(login_url)
@@ -624,6 +647,7 @@ def setup(
     from ..config import _current_user_sid
     from ..service.install import default_source
 
+    print_banner()
     if os.name == "nt":
         _preflight_install()
     _run_service_task(
