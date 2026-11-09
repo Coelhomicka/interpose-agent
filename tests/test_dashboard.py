@@ -190,3 +190,98 @@ def test_dashboard_reports_trimmed_value(setup):
 
     assert response.status_code == 201
     assert response.json()["trimmed"] is True
+
+
+@pytest.fixture()
+def nested(runtime_config, tmp_path):
+    """A registered parent project and a dashboard opened in a folder inside it."""
+    parent = tmp_path / "workspace"
+    child = parent / "app"
+    child.mkdir(parents=True)
+    container = create_container(runtime_config, project_root=child)
+    container.project_registry.register(parent, "workspace")
+    auth = DashboardAuth()
+    app = create_dashboard_app(container, DashboardContext(child, "http://127.0.0.1:9876"), auth)
+    client = TestClient(app, base_url=DASHBOARD)
+    csrf = login(client, auth)
+    return container, client, {CSRF_HEADER: csrf}, child
+
+
+def test_folder_inside_a_project_can_become_its_own_project(nested):
+    _, client, headers, _ = nested
+
+    before = client.get("/api/state").json()
+    assert before["project"]["name"] == "workspace"
+    assert before["project_inherited"] is True
+
+    assert client.post("/api/project", json={}, headers=headers).status_code == 200
+
+    after = client.get("/api/state").json()
+    assert after["project"]["name"] == "app"
+    assert after["project_inherited"] is False
+
+
+def test_unregister_removes_the_project_and_only_its_scope(nested):
+    container, client, headers, _ = nested
+    client.post("/api/project", json={}, headers=headers)
+    client.post("/api/secrets", json={"scope": "project", "reference": "demo/api", "value": "p"}, headers=headers)
+    client.post("/api/secrets", json={"scope": "global", "reference": "demo/api", "value": "g"}, headers=headers)
+    client.post("/api/policies", json={"scope": "project", "secret": "demo/api", "hosts": ["h"]}, headers=headers)
+
+    response = client.delete("/api/project", headers=headers)
+
+    assert response.json() == {"id": "app", "secrets": 1, "policies": 1}
+    state = client.get("/api/state").json()
+    assert state["project"]["name"] == "workspace"  # the parent applies again
+    assert {(s["scope"], s["reference"]) for s in state["secrets"]} == {("global", "secret://demo/api")}
+    assert container.project_registry.get("app") is None
+
+
+def test_unregister_requires_csrf(nested):
+    _, client, _, _ = nested
+
+    assert client.delete("/api/project").status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("path", "broad"),
+    [
+        ("C:\\", True),
+        (r"C:\Users\Mickael Coelho", True),
+        (r"C:\Users\Mickael Coelho\interpose-demo", False),
+        (r"C:\code\my-app", False),
+    ],
+)
+def test_home_folders_and_drive_roots_are_too_broad(path, broad):
+    import os
+
+    from interpose.projects import too_broad
+
+    if os.name != "nt":
+        pytest.skip("Windows paths")
+    assert too_broad(path) is broad
+
+
+def test_posix_home_folders_are_too_broad():
+    from pathlib import PurePosixPath
+
+    from interpose import projects
+
+    for path, broad in [("/", True), ("/home/ana", True), ("/root", True), ("/home/ana/app", False)]:
+        assert projects.too_broad(PurePosixPath(path)) is broad, path
+
+
+def test_registering_a_home_folder_is_refused(runtime_config, tmp_path, monkeypatch):
+    from interpose import projects
+
+    container = create_container(runtime_config, project_root=tmp_path)
+    monkeypatch.setattr(projects, "too_broad", lambda path: True)
+    auth = DashboardAuth()
+    app = create_dashboard_app(container, DashboardContext(tmp_path, "http://127.0.0.1:9876"), auth)
+    client = TestClient(app, base_url=DASHBOARD)
+    csrf = login(client, auth)
+
+    response = client.post("/api/project", json={}, headers={CSRF_HEADER: csrf})
+
+    assert response.status_code == 422
+    assert "home folder" in response.json()["detail"]

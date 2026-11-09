@@ -172,6 +172,12 @@ registrado, `secret://openai/prod` resolve para o valor do projeto, se existir, 
 global caso contrário. As políticas seguem a mesma cadeia, então uma política de projeto pode
 restringir — ou ampliar — como um segredo global compartilhado é usado só naquele projeto.
 
+Um projeto vale para a pasta dele e tudo que está abaixo; com projetos aninhados, vale o mais
+próximo. Abrir o painel numa pasta dentro de um projeto oferece registrar essa pasta como projeto
+próprio, e clicar no nome do projeto na barra do topo remove o registro (apagando os secrets e
+políticas daquele projeto). Pastas de usuário e raízes de disco não podem ser registradas, porque
+cobririam quase tudo.
+
 Qual projeto está ativo vem do registro que o operador gerencia no painel, nunca de um arquivo no
 repositório. Um agente que edita o workspace não consegue apontar a sessão dele para os segredos de
 outro projeto. Os textos cifrados de projeto também ficam vinculados ao escopo pelos dados

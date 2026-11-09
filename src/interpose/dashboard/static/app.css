@@ -265,3 +265,7 @@ body.gate { display: grid; place-items: center; grid-template: none; }
   .content { padding: 16px; }
   .proxy-status #proxy-label { display: none; }
 }
+
+.project-chip[role="button"] { cursor: pointer; }
+.project-chip[role="button"]:hover,
+.project-chip[role="button"]:focus-visible { outline: 1px solid currentColor; outline-offset: 1px; }

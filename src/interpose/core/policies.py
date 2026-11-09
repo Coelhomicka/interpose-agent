@@ -286,6 +286,14 @@ class SQLitePolicyRepository:
                     return self._from_row(row)
         return None
 
+    def purge_scope(self, scope: str) -> int:
+        """Delete every policy in ``scope``; returns how many were removed."""
+        scope = validate_scope(scope)
+        if scope == GLOBAL_SCOPE:
+            raise ValueError("refusing to purge the global scope")
+        with self._connect() as connection:
+            return connection.execute("DELETE FROM policies WHERE scope = ?", (scope,)).rowcount
+
     def delete(self, policy_id: int) -> bool:
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM policies WHERE id = ?", (policy_id,))

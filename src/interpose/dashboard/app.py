@@ -41,6 +41,7 @@ from ..core.local_guard import is_loopback_authority
 from ..core.policies import PolicyDocument, PolicyError
 from ..core.references import SecretReference, SecretReferenceError, normalize_secret_reference
 from ..core.scopes import GLOBAL_SCOPE, ScopeContext, ScopeError, project_scope
+from ..projects import canonical_root
 from ..secrets.base import SecretValueError
 
 SESSION_COOKIE = "interpose_session"
@@ -361,6 +362,12 @@ def create_dashboard_app(
                 {"id": project.id, "name": project.name, "root": project.root} if project else None
             ),
             "working_directory": str(folder_of(request) or ""),
+            # The folder sits inside a registered project without being its root:
+            # the dashboard offers to register the folder as a project of its own.
+            "project_inherited": bool(
+                project and folder_of(request) is not None
+                and canonical_root(project.root) != canonical_root(folder_of(request))
+            ),
             "proxy_url": context.proxy_url,
             "secrets": secret_rows,
             "policies": policy_rows,
@@ -372,11 +379,35 @@ def create_dashboard_app(
         folder = folder_of(request)
         if folder is None:
             raise HTTPException(status_code=409, detail="this session has no working folder")
-        project = runtime.project_registry.register(folder, payload.name)
+        try:
+            project = runtime.project_registry.register(folder, payload.name)
+        except ScopeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if context.follow_project and folder == context.working_directory:
             runtime.scope_context.project_id = project.id
         audit_admin("ADMIN_PROJECT_REGISTER", "none", project_scope(project.id), root=project.root)
         return {"id": project.id, "name": project.name, "root": project.root}
+
+    @app.delete("/api/project")
+    def unregister_project(request: Request) -> dict[str, Any]:
+        """Remove the active project and everything stored in its scope.
+
+        Secrets and policies go with it: left behind, they would be inherited by
+        any later project that happens to get the same id.
+        """
+        project_id = scope_for(request).project_id
+        project = runtime.project_registry.get(project_id) if project_id else None
+        if project is None:
+            raise HTTPException(status_code=404, detail="no registered project for this folder")
+        scope = project_scope(project.id)
+        secrets_removed = runtime.secret_store.backend.purge_scope(scope)
+        policies_removed = runtime.policy_repository.purge_scope(scope)
+        runtime.project_registry.unregister(project.id)
+        if runtime.scope_context.project_id == project.id:
+            runtime.scope_context.project_id = None
+        audit_admin("ADMIN_PROJECT_UNREGISTER", "none", scope, root=project.root,
+                    secrets=secrets_removed, policies=policies_removed)
+        return {"id": project.id, "secrets": secrets_removed, "policies": policies_removed}
 
     @app.post("/api/secrets", status_code=201)
     def write_secret(request: Request, payload: SecretWrite) -> dict[str, Any]:
