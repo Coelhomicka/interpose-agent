@@ -66,7 +66,7 @@ O que cada zona pode fazer:
 | Zona | Guarda | Pode | Não pode |
 | --- | --- | --- | --- |
 | Sua conta (agente, app, CLI, navegador) | Referências `secret://`, a URL do proxy, o token de controle | Enviar requisições pelo broker; abrir uma sessão no painel | Ler o vault ou a chave; alterar o código que o serviço executa; ler um valor de volta por qualquer endpoint |
-| Serviço (`NT SERVICE\Interpose`) | A chave decifrada, só enquanto uma requisição está em andamento | Decifrar, injetar num slot permitido, mascarar, auditar | Escutar fora do loopback; seguir redirecionamentos; tunelar `CONNECT` |
+| Serviço (`NT SERVICE\Interpose`) | A chave decifrada, só enquanto uma requisição está em andamento | Decifrar, injetar num slot permitido, mascarar, auditar | Escutar fora do loopback; seguir redirecionamentos; tunelar `CONNECT` para um host que uma política permite |
 | Administradores / SYSTEM | Tudo | Tudo | — um agente elevado derruba todas as fronteiras aqui |
 
 ## Modos de execução
@@ -228,8 +228,12 @@ O caminho do broker para uma requisição, em ordem — a ordem *é* a proprieda
 
 0. **Rejeita requisições de navegador e de DNS rebinding.** Um header `Origin`, um
    `Sec-Fetch-Site` cross-site ou — no transporte local — um `Host` fora do loopback retorna `403`.
-1. **Rejeita `CONNECT`.** Retorna `501`. Um túnel TLS opaco não pode ser inspecionado, então não dá
-   para aplicar política nele e nenhuma garantia é prometida.
+1. **Rejeita `CONNECT` na porta do broker.** Retorna `501`. O `CONNECT` só é atendido pela frente
+   `HTTPS_PROXY`, na porta dela (`proxy/tunnel.py`). Ali, um host que alguma política permite é
+   sempre aberto com um certificado da CA local do broker, e cada requisição dentro dele entra neste
+   mesmo pipeline como um alvo `https://` absoluto, com o `Host` obrigatoriamente igual ao do túnel;
+   qualquer outro host recebe um túnel de bytes não lido, já que nenhuma credencial pode ser injetada
+   ali. O projeto vem do nome de usuário do proxy.
 2. **Escolhe o escopo.** Um prefixo `/p/{projeto}/` seleciona o escopo desse projeto registrado
    (depois o global) para esta requisição; um projeto desconhecido retorna `404`. Sem o prefixo, o
    broker usa o próprio escopo — a pasta onde o `interpose up` foi iniciado, ou só o global no
@@ -323,8 +327,12 @@ crie ou lembre de nada; o prompt do UAC, uma vez, é a única interação de adm
 deixaria um agente executar código dentro do serviço. Copiá-los para Program Files custa espaço em
 disco e compra uma fronteira de aplicação.
 
-**`CONNECT` falha de forma explícita.** Tunelar em silêncio produziria software funcionando com uma
-promessa de segurança falsa. Um `501` é uma experiência pior e uma honesta.
+**Um túnel nunca é opaco onde uma credencial poderia valer.** Na porta do broker o `CONNECT` retorna
+`501`. Na porta do `HTTPS_PROXY`, um host que alguma política permite é sempre terminado e lido, então
+política e substituição rodam exatamente como no transporte explícito. Só hosts que nenhuma política
+cita passam por um túnel não lido: uma referência enviada para lá continua sendo só uma referência. A
+CA local que torna isso possível é confiável só para a sessão do agente, nunca para o sistema
+operacional.
 
 **Mascaramento é rede de proteção, não defesa.** O motor remove das respostas os valores resolvidos
 conhecidos e suas codificações comuns. Um valor transformado além disso — com hash, dividido entre

@@ -46,6 +46,9 @@ dependencies = [
   "rich>=13",
   "cryptography>=43",
   "httpx>=0.27",
+  # The HTTPS_PROXY front parses HTTP/1.1 itself and builds agents' trust bundle.
+  "h11>=0.14",
+  "certifi>=2024.2.2",
   "PyYAML>=6.0",
 ]
 

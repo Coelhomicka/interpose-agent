@@ -77,7 +77,8 @@ These are documented non-guarantees, not vulnerabilities:
   loopback-only.
 - **`interpose-exec`** delivering plaintext to its subprocess. That is its documented behavior and the
   reason it is labeled a limited compatibility mode.
-- HTTPS `CONNECT` not being intercepted. It is rejected with `501` by design.
+- `HTTPS_PROXY` tunnels to hosts no policy allows not being read. No credential can be injected
+  there, so they are tunneled unread by design; egress control is the OS's job.
 - DNS, QUIC, covert channels, and other transports outside the broker.
 
 If you believe one of these is exploitable in a way the threat model does not already describe,
@@ -101,8 +102,9 @@ Interpose's guarantees hold only under the deployment it assumes:
 
 Three decisions are deliberate and will not be "fixed" without a design that preserves the guarantee:
 
-- **`CONNECT` is rejected, not tunneled.** A broker cannot enforce policy on traffic it cannot read.
-  Accepting the tunnel would produce a security claim that does not hold.
+- **A host a policy allows is never tunneled unread.** On the `HTTPS_PROXY` port such hosts are
+  terminated with the broker's local CA and policy-checked; the broker port rejects `CONNECT`. A
+  tunnel the broker cannot read would be a place where policy silently stops applying.
 - **No read-secret endpoint exists** anywhere in the API or CLI. Convenience is not a sufficient
   reason to add one.
 - **Insecure external HTTP is denied by default** and requires an explicit `schemes: [http]` in the

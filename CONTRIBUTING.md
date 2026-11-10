@@ -87,7 +87,8 @@ A pull request doing any of these will be declined regardless of its quality:
 - adding an endpoint, CLI command, or log line that returns or prints a stored secret value;
 - resolving a secret before its policy is evaluated;
 - allowing a session profile to grant a policy;
-- accepting HTTPS `CONNECT` by tunneling it — see [SECURITY.md](SECURITY.md) for why;
+- tunneling `CONNECT` unread to a host that some policy allows, or adding the broker CA to the
+  operating system's trust store — see [SECURITY.md](SECURITY.md) for why;
 - passing `INTERPOSE_MASTER_KEY` or `INTERPOSE_HOME` to a managed child;
 - widening the default environment allowlist without a stated reason per variable.
 

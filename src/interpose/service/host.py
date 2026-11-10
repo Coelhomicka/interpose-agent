@@ -26,8 +26,16 @@ from ..container import create_container
 from ..core.presence import PresenceVerifier
 from ..dashboard.app import DashboardAuth, DashboardContext, create_dashboard_app
 from ..proxy.http_proxy import create_proxy_app
+from ..proxy.tls_authority import CertificateAuthority
+from ..proxy.tunnel import TunnelServer, policy_host_checker
 from . import SERVICE_NAME
-from .layout import DEFAULT_DASHBOARD_PORT, DEFAULT_PROXY_PORT, ServiceEndpoint, ServiceLayout
+from .layout import (
+    DEFAULT_DASHBOARD_PORT,
+    DEFAULT_HTTPS_PROXY_PORT,
+    DEFAULT_PROXY_PORT,
+    ServiceEndpoint,
+    ServiceLayout,
+)
 
 logger = logging.getLogger("interpose.service")
 
@@ -61,6 +69,7 @@ def run_host(
     *,
     proxy_port: int = DEFAULT_PROXY_PORT,
     dashboard_port: int = DEFAULT_DASHBOARD_PORT,
+    https_proxy_port: int = DEFAULT_HTTPS_PROXY_PORT,
 ) -> None:
     layout.vault_dir.mkdir(parents=True, exist_ok=True)
     # The vault folder is this process's runtime home. An inherited master key
@@ -79,8 +88,16 @@ def run_host(
         control_token=control_token,
         presence=PresenceVerifier(layout.presence_file),
     )
+    proxy_app = create_proxy_app(container)
+    https_proxy_url = f"http://127.0.0.1:{https_proxy_port}"
+    tunnel = TunnelServer(
+        proxy_app,
+        CertificateAuthority(layout.tls_dir, public_certificate=layout.ca_certificate_file),
+        intercepts=policy_host_checker(container.policy_repository),
+        known_project=lambda project: container.project_registry.get(project) is not None,
+    )
     servers = [
-        uvicorn.Server(uvicorn.Config(create_proxy_app(container), host="127.0.0.1", port=proxy_port,
+        uvicorn.Server(uvicorn.Config(proxy_app, host="127.0.0.1", port=proxy_port,
                                       log_level="warning", log_config=None)),
         uvicorn.Server(uvicorn.Config(dashboard, host="127.0.0.1", port=dashboard_port,
                                       log_level="warning", log_config=None)),
@@ -88,16 +105,26 @@ def run_host(
 
     async def serve() -> None:
         async def publish_when_ready() -> None:
+            published_https_proxy = https_proxy_url
+            try:
+                await tunnel.start("127.0.0.1", https_proxy_port)
+            except OSError as exc:
+                # Without the port, agents keep the explicit transport; the broker still serves.
+                logger.warning("HTTPS proxy not started on port %s: %s", https_proxy_port, exc)
+                published_https_proxy = None
             while not all(server.started for server in servers):
                 await asyncio.sleep(0.05)
-            publish_endpoint(layout, ServiceEndpoint(proxy_url, dashboard_url, os.getpid()), control_token)
-            logger.info("listening: proxy %s, dashboard %s", proxy_url, dashboard_url)
+            endpoint = ServiceEndpoint(proxy_url, dashboard_url, os.getpid(), published_https_proxy)
+            publish_endpoint(layout, endpoint, control_token)
+            logger.info("listening: proxy %s, https proxy %s, dashboard %s",
+                        proxy_url, published_https_proxy, dashboard_url)
 
         async def stop_when_asked() -> None:
             while not stop_event.is_set():
                 await asyncio.sleep(0.2)
             for server in servers:
                 server.should_exit = True
+            await tunnel.close()
 
         await asyncio.gather(*(server.serve() for server in servers), publish_when_ready(), stop_when_asked())
 
@@ -127,10 +154,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, help="Override the service data folder (console runs only).")
     parser.add_argument("--proxy-port", type=int, default=DEFAULT_PROXY_PORT)
     parser.add_argument("--dashboard-port", type=int, default=DEFAULT_DASHBOARD_PORT)
+    parser.add_argument("--https-proxy-port", type=int, default=DEFAULT_HTTPS_PROXY_PORT)
     args = parser.parse_args(argv)
 
     layout = ServiceLayout.default()
-    ports = {"proxy_port": args.proxy_port, "dashboard_port": args.dashboard_port}
+    ports = {
+        "proxy_port": args.proxy_port,
+        "dashboard_port": args.dashboard_port,
+        "https_proxy_port": args.https_proxy_port,
+    }
 
     if args.console:
         if args.data_dir is not None:

@@ -49,7 +49,7 @@ def test_run_command_forwards_arbitrary_agent_arguments(runtime_config, tmp_path
             captured["agent"] = kwargs["agent"]
             return 0
 
-    monkeypatch.setattr("interpose.cli.main._session_launcher", lambda cwd: FakeLauncher())
+    monkeypatch.setattr("interpose.cli.main._session_launcher", lambda cwd, **_: FakeLauncher())
 
     result = runner.invoke(
         app,

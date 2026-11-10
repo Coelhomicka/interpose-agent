@@ -31,7 +31,8 @@ The preferred model is reference-only execution: untrusted processes receive `se
 | Elevated agent | Not Protected | An administrator can read anything. `interpose run` refuses to start an agent from an elevated shell unless `--allow-elevated` is passed. |
 | Direct network exfiltration | Not Protected Yet | The explicit local transport does not prevent an agent from opening direct sockets. OS egress enforcement remains mandatory. |
 | HTTP broker exfiltration | Protected for policy-approved destinations | Destination, method, scheme, path and slot policies are enforced before resolution. The destination is parsed strictly (one ASCII hostname or IP literal and an optional port; no userinfo, path, query, fragment or Unicode), and the URL the upstream client will dial is re-parsed and must equal the one policy approved, so `#`, `?`, `@`, encoded separators or dot segments cannot redirect the request. Allow patterns are exact or a leading `*.` label; glob patterns such as `api.*` are refused. |
-| HTTPS traffic | Not Protected Yet | `CONNECT` is rejected because an opaque TLS tunnel cannot substitute references safely. |
+| HTTPS traffic through `HTTPS_PROXY` | Protected for hosts a policy allows | `interpose run` routes the agent through the broker's proxy port. A host that some policy allows is always terminated with a certificate from the broker's local CA and goes through the same checks as the explicit transport; requests inside must name the tunnel's host, and the scheme cannot be overridden. Other hosts are tunneled unread: the agent holds only references, so nothing it sends there contains a credential. The broker port itself still rejects `CONNECT`. |
+| Broker's local CA | Protected with the service; Not Protected in development mode | The CA key lives in the vault folder, readable only by the service account. Leaves are issued only for hosts a policy allows, last 7 days and carry `serverAuth` only; the CA has `pathLenConstraint = 0`. It is never added to the OS trust store: only the agent's session trusts it, through environment variables and a session `curlrc`. In development mode the key is in the user's profile, so a same-user process could issue certificates — trusted only by sessions that already run as that user. |
 | HTTP redirects | Protected | Automatic upstream redirects are disabled. |
 | URL-encoded references | Protected for query/form HTTP | The broker decodes references, evaluates policy, resolves, and safely re-encodes values. |
 | Fingerprint guessing | Protected | Fingerprints are HMAC-SHA256 under a key derived from the master key, so a listed fingerprint is not an offline oracle for low-entropy secrets. Legacy SHA-256 fingerprints are rewritten on open. |
@@ -41,7 +42,7 @@ The preferred model is reference-only execution: untrusted processes receive `se
 | Tracebacks | Partially Protected | Broker errors are redacted. Untrusted application tracebacks contain references only in managed sessions. |
 | Response reflection | Partially Protected | Known resolved values are redacted case-insensitively in headers and bodies: as sent and trimmed, percent-encoded, JSON-escaped, hex, and base64 (standalone, URL-safe, and embedded at any alignment, as in Basic authentication). The broker only offers `gzip`/`deflate` upstream and refuses any other `Content-Encoding`, so redaction never scans a compressed body. An allowed host that deliberately transforms the value (encrypts, splits, or re-encodes it in another charset) can still return it; injection slots and narrow `paths` limit this to hosts the operator already trusts with the secret. |
 | DNS exfiltration | Not Protected Yet | DNS is not controlled at the OS layer. |
-| Certificate pinning | Not Protected Yet | Future transparent TLS termination will not work for pinned clients without explicit integration. |
+| Certificate pinning | Not Protected Yet | Clients that pin certificates or ignore proxy variables do not go through the broker; without a credential their calls fail rather than leak. |
 | Local cryptographic use | Future | Signing, mTLS, SSH, and SigV4 require operation brokers; returning key material is prohibited. |
 
 ## Guarantees
@@ -54,7 +55,7 @@ The current implementation guarantees that:
 4. the launcher does not pass `INTERPOSE_MASTER_KEY` or `INTERPOSE_HOME` to children;
 5. local secret storage uses authenticated encryption;
 6. audit records do not intentionally persist plaintext secrets;
-7. HTTP `CONNECT` is rejected instead of creating a false transparent-HTTPS guarantee.
+7. `CONNECT` to a host that some policy allows is never tunneled unread: it is terminated and policy-checked like any other request, or refused; the broker port rejects `CONNECT` altogether;
 8. the explicit local transport derives the destination from `/proxy/{host}` and defaults external traffic to HTTPS;
 9. loopback listeners refuse browser-originated and DNS-rebound requests, and the admin API requires a token;
 10. with the Windows service installed, the vault and master key are readable only by `NT SERVICE\Interpose`, SYSTEM and administrators, and the service loads code only from `%ProgramFiles%\Interpose`.

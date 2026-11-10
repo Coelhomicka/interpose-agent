@@ -87,7 +87,7 @@ def test_run_refuses_an_elevated_shell(tmp_path, monkeypatch):
     profile.write_text("version: 1\nenvironment: {}\n", encoding="utf-8")
     monkeypatch.setattr("interpose.core.elevation.is_elevated", lambda: True)
     monkeypatch.setattr("interpose.cli.main._session_launcher",
-                        lambda cwd: (_ for _ in ()).throw(AssertionError("agent started")))
+                        lambda cwd, **_: (_ for _ in ()).throw(AssertionError("agent started")))
 
     result = runner.invoke(app, ["run", "--profile", str(profile), "--", "agent"])
 

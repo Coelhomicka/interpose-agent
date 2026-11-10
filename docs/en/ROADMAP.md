@@ -21,7 +21,7 @@
 - separate public and credential environment bindings
 - URL-encoded query and form substitution
 - JSON, header, and body substitution
-- explicit rejection of unsupported HTTPS `CONNECT`
+- `HTTPS_PROXY` mode: TLS terminated by a session-trusted local CA for hosts a policy allows
 - limited `interpose-exec` compatibility mode
 - injection slots, path allow-lists, and explicit `allow_exec` in policies
 - project and global scopes for secrets and policies

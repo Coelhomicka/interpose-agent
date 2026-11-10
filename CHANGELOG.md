@@ -10,6 +10,22 @@ Entries that change a security guarantee are marked **[security]**.
 
 ## [Unreleased]
 
+### Transparent HTTPS (`HTTPS_PROXY`)
+
+- **[security]** `interpose run` routes the agent's HTTP(S) through a second broker port (`9877`)
+  with `HTTPS_PROXY`, so tools without a base-URL setting — `gh`, `git`, `curl`, `npm`, Python, Go,
+  most MCP servers — get credentials from `secret://` references too. A host that some policy
+  allows is terminated with a certificate from the broker's local CA and goes through the same
+  policy, slot, substitution, redaction and audit path as the explicit transport; requests inside
+  must name the tunnel's host. Other hosts are tunneled unread. The broker port still rejects
+  `CONNECT`.
+- **[security]** The local CA (`pathLenConstraint = 0`, 7-day `serverAuth` leaves, only for hosts a
+  policy allows) keeps its key in the vault folder and is never added to the OS trust store: only
+  the agent's session trusts it, through `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`,
+  `NODE_EXTRA_CA_CERTS`, Git's CA settings and a session `curlrc`.
+- The proxy user name selects the project (`http://<project>:interpose@127.0.0.1:9877`).
+- `interpose run --no-https-proxy` turns it off; `interpose up --https-proxy-port` moves it.
+
 ### Onboarding
 
 - `interpose scan`: finds plaintext credentials in the config files of every common stack (dotenv,
