@@ -78,6 +78,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "interpose.dashboard" = ["static/*"]
 "interpose.agents" = ["*.md"]
+"interpose.service" = ["requirements.lock", "build-requirements.in"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

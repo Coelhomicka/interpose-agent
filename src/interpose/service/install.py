@@ -282,10 +282,33 @@ def install_runtime(layout: ServiceLayout, source: str, log: Log) -> None:
     python = str(layout.python_exe)
     log("Installing pip into the service runtime ...")
     _run([python, "-I", "-m", "ensurepip", "--default-pip"], log)
-    log(f"Installing Interpose from {source} (this downloads dependencies) ...")
-    _run([python, "-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-warn-script-location",
-          "--no-cache-dir", source], log)
+    log(f"Installing Interpose from {source} with hash-checked dependencies ...")
+    for command in runtime_install_commands(python, source, SERVICE_LOCK):
+        _run(command, log)
     _run([python, "-I", "-c", "import interpose.service.host"], log)
+
+
+SERVICE_LOCK = Path(__file__).with_name("requirements.lock")
+
+
+def runtime_install_commands(python: str, source: str, lock: Path) -> list[list[str]]:
+    """pip commands that build the service runtime without unverified downloads.
+
+    This runs as administrator and its result holds the vault key, so a tampered
+    package on the index must not get in. Every dependency, and the build backend
+    used for Interpose itself, comes from a lock with sha256 hashes
+    (``--require-hashes``). Interpose is then installed without dependencies and
+    without build isolation, so pip fetches nothing else. Its own integrity comes
+    from the source: a git commit id, or the user's local checkout.
+    """
+    if not lock.is_file():
+        raise InstallError(f"missing dependency lock {lock}; reinstall Interpose")
+    pip = [python, "-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-warn-script-location",
+           "--no-cache-dir"]
+    return [
+        [*pip, "--require-hashes", "--no-deps", "--only-binary", ":all:", "-r", str(lock)],
+        [*pip, "--no-deps", "--no-build-isolation", source],
+    ]
 
 
 def grant_start_stop(user_sid: str, log: Log) -> None:

@@ -46,6 +46,13 @@ Entries that change a security guarantee are marked **[security]**.
 
 ### Security
 
+- **[security]** `interpose setup` installs the service runtime's dependencies from a lock with
+  sha256 hashes (`--require-hashes`, wheels only) and installs Interpose itself without
+  dependencies or build isolation, so nothing unverified is downloaded by the elevated installer.
+- **[security]** CI actions are pinned to commit SHAs and check out without persisted credentials;
+  CodeQL (Python, JavaScript, Actions; security-extended queries) and the OpenSSF Scorecard run
+  on every change to `main`.
+
 - **[security]** Policies now control *where* a reference may appear. The broker records the header,
   query field, form field, or body each reference sits in and denies any location outside the
   policy's new `inject` slots before resolution. The default, when `inject` is omitted, is the
