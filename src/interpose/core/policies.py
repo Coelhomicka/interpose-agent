@@ -26,6 +26,31 @@ class HostGroup(BaseModel):
     hosts: list[str] = Field(default_factory=list)
 
 
+def host_matches(host: str, pattern: str) -> bool:
+    """Whether ``host`` (``name[:port]``, lower-case) is covered by an allow pattern.
+
+    Patterns are an exact authority (``api.example.com``, ``localhost:8001``), a
+    subdomain wildcard (``*.example.com``, which covers ``a.example.com`` and
+    ``a.b.example.com`` but not ``example.com`` or ``evilexample.com``), or ``*``.
+    A ``*`` anywhere else matches nothing: glob semantics would let ``api.*`` or
+    ``*example.com`` cover hosts the operator never meant to trust.
+    """
+    host = host.lower()
+    pattern = pattern.strip().lower()
+    if pattern == "*":
+        return True
+    if pattern.startswith("*."):
+        suffix = pattern[1:]
+        return "*" not in suffix and host.endswith(suffix) and len(host) > len(suffix)
+    return "*" not in pattern and host == pattern
+
+
+def _host_denied(host: str, pattern: str) -> bool:
+    # Deny patterns keep full glob semantics: matching too much only blocks more.
+    pattern = pattern.strip().lower()
+    return host_matches(host, pattern) or fnmatch.fnmatchcase(host.lower(), pattern)
+
+
 INJECTION_KINDS = ("header", "query", "form")
 
 
@@ -96,6 +121,21 @@ class PolicyDocument(BaseModel):
     inject: list[InjectionSlot] | None = None
     allow_exec: bool = False
 
+    @field_validator("allow")
+    @classmethod
+    def validate_allow_hosts(cls, value: HostGroup | None) -> HostGroup | None:
+        if value is None:
+            return None
+        for pattern in value.hosts:
+            stripped = pattern.strip()
+            if "*" in stripped and stripped != "*" and not (
+                stripped.startswith("*.") and "*" not in stripped[1:]
+            ):
+                raise ValueError(
+                    f"allow host {pattern!r}: '*' is only allowed alone or as the leading label (*.example.com)"
+                )
+        return value
+
     @field_validator("paths")
     @classmethod
     def validate_paths(cls, values: list[str] | None) -> list[str] | None:
@@ -141,6 +181,54 @@ class PolicyDocument(BaseModel):
         if self.inject is None:
             return DEFAULT_INJECTION_SLOTS
         return tuple(slot.location() for slot in self.inject)
+
+
+def _pattern_covers(existing: str, candidate: str) -> bool:
+    existing, candidate = existing.strip().lower(), candidate.strip().lower()
+    if existing == "*" or existing == candidate:
+        return True
+    if existing.startswith("*."):
+        suffix = existing[1:]
+        name = candidate[1:] if candidate.startswith("*.") else candidate
+        return "*" not in name and name.endswith(suffix) and len(name) > len(suffix)
+    return False
+
+
+def widens(new: PolicyDocument, old: PolicyDocument | None) -> bool:
+    """Whether storing ``new`` in place of ``old`` could let the secret go anywhere new.
+
+    Conservative: anything not provably narrower or equal counts as widening. A
+    policy that did not exist before always widens.
+    """
+    if old is None:
+        return True
+    old_allow = old.allow.hosts if old.allow else []
+    new_allow = new.allow.hosts if new.allow else []
+    if not all(any(_pattern_covers(o, n) for o in old_allow) for n in new_allow):
+        return True
+    old_deny = {pattern.strip().lower() for pattern in (old.deny.hosts if old.deny else [])}
+    new_deny = {pattern.strip().lower() for pattern in (new.deny.hosts if new.deny else [])}
+    if not old_deny <= new_deny:
+        return True
+    old_methods, new_methods = set(old.normalized_methods()), set(new.normalized_methods())
+    if old_methods and (not new_methods or not new_methods <= old_methods):
+        return True
+    old_schemes = set(old.normalized_schemes()) or {"https"}
+    new_schemes = set(new.normalized_schemes()) or {"https"}
+    if not new_schemes <= old_schemes:
+        return True
+    if old.paths is not None and (new.paths is None or not set(new.paths) <= set(old.paths)):
+        return True
+
+    def slots(document: PolicyDocument) -> set[tuple[str, str]]:
+        return {
+            (slot.kind, (slot.name or "").lower() if slot.kind == "header" else slot.name or "")
+            for slot in document.injection_slots()
+        }
+
+    if not slots(new) <= slots(old):
+        return True
+    return new.allow_exec and not old.allow_exec
 
 
 def _is_loopback_destination(host: str) -> bool:
@@ -303,8 +391,12 @@ class SQLitePolicyRepository:
 class PolicyEngine:
     """Evaluates the policy in effect for a reference along the scope chain.
 
-    A project policy shadows the global one for the same reference, so an operator
-    can narrow (or widen) how a shared secret may be used inside one project.
+    A project policy shadows the global one for the same reference. Scopes organize
+    configuration; they are not an isolation boundary against code running as the
+    same user, which can address any project's route (or the global one). The hosts
+    a secret can reach are therefore the union of every policy written for it, and
+    a project policy that is narrower than the global one does not contain anything.
+    See docs/en/THREAT_MODEL.md.
     """
 
     def __init__(self, repository: SQLitePolicyRepository, context: ScopeContext | None = None) -> None:
@@ -343,7 +435,11 @@ class PolicyEngine:
         policy's injection slots. A reference anywhere else is denied: a body or an
         arbitrary field is a place an allowed host can echo or publish the value.
         """
-        document = self._document(secret_reference)
+        try:
+            document = self._document(secret_reference)
+        except PolicyError:
+            # A policy stored before a validation rule tightened fails closed.
+            return self._deny(secret_reference, destination, "stored policy is no longer valid; edit it")
         if document is None:
             return self._deny(secret_reference, destination, "No policy registered for secret reference")
 
@@ -366,7 +462,7 @@ class PolicyEngine:
         host = destination.host.lower()
         deny_hosts = [pattern.lower() for pattern in document.deny.hosts] if document.deny else []
         for pattern in deny_hosts:
-            if fnmatch.fnmatchcase(host, pattern):
+            if _host_denied(host, pattern):
                 return self._deny(
                     secret_reference, destination, f"destination {destination.host} denied by pattern {pattern}"
                 )
@@ -374,7 +470,7 @@ class PolicyEngine:
         allow_hosts = [pattern.lower() for pattern in document.allow.hosts] if document.allow else []
         if not allow_hosts:
             return self._deny(secret_reference, destination, "policy does not define any allowed hosts")
-        if not any(fnmatch.fnmatchcase(host, pattern) for pattern in allow_hosts):
+        if not any(host_matches(host, pattern) for pattern in allow_hosts):
             return self._deny(secret_reference, destination, f"destination {destination.host} is not in allow list")
 
         if document.paths is not None:
@@ -399,5 +495,8 @@ class PolicyEngine:
         )
 
     def allows_exec(self, secret_reference: SecretReference) -> bool:
-        document = self._document(secret_reference)
+        try:
+            document = self._document(secret_reference)
+        except PolicyError:
+            return False
         return bool(document and document.allow_exec)

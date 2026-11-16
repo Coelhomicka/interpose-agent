@@ -4,6 +4,7 @@
 | --- | --- | --- |
 | Architecture · Arquitetura | [en/ARCHITECTURE.md](en/ARCHITECTURE.md) | [pt-br/ARCHITECTURE.md](pt-br/ARCHITECTURE.md) |
 | Threat model · Modelo de ameaças | [en/THREAT_MODEL.md](en/THREAT_MODEL.md) | [pt-br/THREAT_MODEL.md](pt-br/THREAT_MODEL.md) |
+| Security audit · Auditoria de segurança | [en/SECURITY_AUDIT.md](en/SECURITY_AUDIT.md) | [pt-br/SECURITY_AUDIT.md](pt-br/SECURITY_AUDIT.md) |
 | Agent credential contract · Contrato de credenciais | [en/AGENT_CREDENTIALS.md](en/AGENT_CREDENTIALS.md) | [pt-br/AGENT_CREDENTIALS.md](pt-br/AGENT_CREDENTIALS.md) |
 | Roadmap | [en/ROADMAP.md](en/ROADMAP.md) | [pt-br/ROADMAP.md](pt-br/ROADMAP.md) |
 

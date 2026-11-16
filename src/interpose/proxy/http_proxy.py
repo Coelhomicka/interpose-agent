@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
@@ -39,6 +40,7 @@ _HOP_BY_HOP_HEADERS = {
 # httpx decodes the upstream body, so the encoding header no longer describes what
 # the client receives; forwarding it makes the client try to decompress plain bytes.
 _RESPONSE_ONLY_DROPPED_HEADERS = {"content-encoding", "server", "date"}
+_REDACTABLE_CODINGS = {"identity", "gzip", "x-gzip", "deflate"}
 # ``server`` and ``date`` are re-added by the broker's own HTTP server; forwarding
 # the upstream copies as well produced duplicates and fingerprinted the upstream.
 
@@ -84,13 +86,10 @@ def parse_proxy_target(
         parsed = urlsplit(raw_target)
         if parsed.username or parsed.password or not parsed.hostname:
             raise ValueError("invalid absolute proxy target")
-        host = parsed.hostname
-        if parsed.port:
-            host = f"{host}:{parsed.port}"
         return ProxyTarget(
             scheme=parsed.scheme,
-            host=host,
-            path=parsed.path or "/",
+            host=_normalized_authority(parsed.netloc),
+            path=unquote(parsed.path) or "/",
             query=parsed.query or fallback_query,
         )
 
@@ -101,23 +100,85 @@ def parse_proxy_target(
         raise ValueError("invalid upstream scheme")
     return ProxyTarget(
         scheme=scheme,
-        host=host_header,
+        # The Host header is attacker-chosen text. Policy must match the host the
+        # connection is actually made to, so it goes through the same strict parser
+        # as the path-addressed transport: one hostname, an optional port, nothing else.
+        host=_normalized_authority(host_header),
         path=f"/{fallback_path.lstrip('/')}",
         query=fallback_query,
     )
 
 
+# One DNS name in ASCII (IDNA A-labels, never Unicode): policy matching and the
+# connection must see the same bytes, and Unicode hosts are normalized differently
+# by different parsers.
+_HOSTNAME_RE = re.compile(r"^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*$")
+
+
 def _normalized_authority(value: str) -> str:
+    """``host[:port]`` in canonical form, or ValueError for anything else.
+
+    Refuses userinfo, paths, queries, fragments, non-ASCII names and anything that
+    is not a valid DNS name or IP literal, so no character can make the upstream
+    client dial a different host than the one the policy approved.
+    """
+    if not value or not value.isascii() or any(ch.isspace() or ord(ch) < 0x21 for ch in value):
+        raise ValueError("invalid destination host")
     try:
         parsed = urlsplit(f"//{value}")
         port = parsed.port
     except ValueError as exc:
-        raise ValueError("invalid local transport destination") from exc
+        raise ValueError("invalid destination host") from exc
     if parsed.username or parsed.password or not parsed.hostname or parsed.path or parsed.query or parsed.fragment:
-        raise ValueError("invalid local transport destination")
+        raise ValueError("invalid destination host")
+    if "@" in value or "\\" in value:
+        raise ValueError("invalid destination host")
     hostname = parsed.hostname.lower()
-    rendered_host = f"[{hostname}]" if ":" in hostname else hostname
+    if ":" in hostname:
+        try:
+            ipaddress.IPv6Address(hostname)
+        except ValueError as exc:
+            raise ValueError("invalid destination host") from exc
+        rendered_host = f"[{hostname}]"
+    else:
+        if not _HOSTNAME_RE.match(hostname):
+            raise ValueError("invalid destination host")
+        rendered_host = hostname
     return f"{rendered_host}:{port}" if port else rendered_host
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def verified_upstream_url(target: ProxyTarget) -> httpx.URL:
+    """The URL the upstream client will dial, proven equal to what policy saw.
+
+    The policy is evaluated on ``target``; the request goes to the parsed URL. Any
+    disagreement between the two (a ``#`` or ``?`` hidden in the path, dot segments
+    the client would collapse, a host the client normalizes differently) is refused
+    instead of guessed at.
+    """
+    if any(segment in {".", ".."} for segment in target.path.split("/")):
+        raise ValueError("dot segments are not allowed in the upstream path")
+    try:
+        url = httpx.URL(f"{target.scheme}://{target.host}{target.path}")
+    except httpx.InvalidURL as exc:
+        raise ValueError("invalid upstream URL") from exc
+    expected = urlsplit(f"//{target.host}")
+    dialed_host = url.raw_host.decode("ascii", errors="replace").lower()
+    expected_port = expected.port or _DEFAULT_PORTS[target.scheme]
+    dialed_port = url.port or _DEFAULT_PORTS.get(url.scheme)
+    if (
+        url.scheme != target.scheme
+        or dialed_host != expected.hostname
+        or dialed_port != expected_port
+        or url.userinfo
+        or url.query
+        or url.fragment
+        or url.path != target.path
+    ):
+        raise ValueError("upstream URL does not match the policy-checked destination")
+    return url
 
 
 def parse_local_transport_target(path: str, query: str) -> ProxyTarget | None:
@@ -235,6 +296,7 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
                     fallback_path=path,
                     fallback_query=request.url.query,
                 )
+            base_url = verified_upstream_url(target)
         except ValueError as exc:
             return Response(content=str(exc), status_code=400)
 
@@ -298,9 +360,13 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
 
             resolved_query_pairs = substitution.substitute(query_pairs).value if query_pairs else []
             resolved_query = urlencode(resolved_query_pairs) if resolved_query_pairs else ""
-            upstream_url = f"{target.scheme}://{target.host}{target.path}"
-            if resolved_query:
-                upstream_url = f"{upstream_url}?{resolved_query}"
+            upstream_url = base_url.copy_with(query=resolved_query.encode("ascii")) if resolved_query else base_url
+            # Only encodings the broker can decode, so redaction always sees plain
+            # bytes; a brotli or zstd body would be scanned while still compressed.
+            resolved_headers = {
+                key: value for key, value in resolved_headers.items() if key.lower() != "accept-encoding"
+            }
+            resolved_headers["accept-encoding"] = "gzip, deflate"
 
             request_content: Any = None
             request_json: Any = None
@@ -346,6 +412,15 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
                 )
         except Exception as exc:
             return Response(content=runtime.redaction_engine.redact(str(exc)), status_code=502)
+
+        content_codings = [
+            token.strip().lower()
+            for token in upstream_response.headers.get("content-encoding", "").split(",")
+            if token.strip()
+        ]
+        if any(coding not in _REDACTABLE_CODINGS for coding in content_codings):
+            # Fail closed: a body the broker cannot decode cannot be redacted.
+            return Response(content="upstream used an unsupported content-encoding", status_code=502)
 
         response_headers = _response_headers(upstream_response.headers, runtime.redaction_engine)
         content = upstream_response.content

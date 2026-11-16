@@ -49,6 +49,13 @@ class ServiceLayout:
         return self.data_dir / "vault"
 
     @property
+    def presence_file(self) -> Path:
+        """The enrolled authenticator's public key. Written only by an elevated
+        process: the vault folder is closed to the user's processes, so they cannot
+        enroll a key of their own."""
+        return self.vault_dir / "presence.json"
+
+    @property
     def client_dir(self) -> Path:
         return self.data_dir / "client"
 

@@ -290,7 +290,8 @@ def test_host_serves_and_publishes_its_endpoint(tmp_path, monkeypatch):
         assert (layout.vault_dir / "master.key").is_file()
 
         login_url = client.login_url(tmp_path)
-        assert login_url.startswith(f"http://127.0.0.1:{dashboard_port}/login?t=")
+        # localhost, not the IP: WebAuthn (Windows Hello) refuses IP relying parties.
+        assert login_url.startswith(f"http://localhost:{dashboard_port}/login?t=")
         assert client.proxy_base(tmp_path) == f"http://127.0.0.1:{proxy_port}/proxy"
         assert client.secret_exists("demo/api", tmp_path) is False
     finally:
