@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from interpose.cli.main import app
 from interpose.container import create_container
+from interpose.core.policies import PolicyDocument
 from interpose.dashboard.app import DashboardAuth, DashboardContext, create_dashboard_app
 from interpose.onboarding.importer import apply, plan
 from interpose.onboarding.providers import identify
@@ -181,7 +182,8 @@ def test_cli_scan_exit_code_and_import_in_development_mode(project, runtime_conf
     container = create_container(runtime_config)
     assert container.secret_store.resolve("secret://openai/openai_api_key").value == OA
     policy = container.policy_repository.get_by_secret("secret://openai/openai_api_key")
-    assert policy is not None and "api.openai.com" in policy.definition
+    assert policy is not None
+    assert PolicyDocument.model_validate_json(policy.definition).allow.hosts == ["api.openai.com"]
 
 
 def test_control_import_stores_and_suggests_only_catalog_policies(runtime_config, tmp_path):

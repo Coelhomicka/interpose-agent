@@ -1,0 +1,4 @@
+# Build backend for installing Interpose itself into the service runtime
+# without build isolation, so the build step is covered by hashes too.
+setuptools>=77
+wheel

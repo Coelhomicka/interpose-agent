@@ -24,6 +24,7 @@ sends.
 from __future__ import annotations
 
 import hmac
+import logging
 import secrets
 import time
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ from ..onboarding.providers import provider as provider_by_id
 from ..projects import canonical_root
 from ..secrets.base import SecretValueError
 
+_log = logging.getLogger(__name__)
 SESSION_COOKIE = "interpose_session"
 CSRF_HEADER = "x-interpose-csrf"
 _STATIC_FILES = {
@@ -278,7 +280,9 @@ def create_dashboard_app(
                 )
             presence.finish(session_id, digest, approval, origin=f"http://{host}")
         except PresenceError as exc:
-            return JSONResponse({"detail": f"approval refused: {exc}"}, status_code=403)
+            # The reason stays in the service log; the browser only learns that it failed.
+            _log.info("Windows Hello approval refused: %s", exc)
+            return JSONResponse({"detail": "approval refused; try again"}, status_code=403)
         return "verified"
 
     def audit_admin(action: str, reference: str, scope: str, **details: Any) -> None:
