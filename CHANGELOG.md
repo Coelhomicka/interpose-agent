@@ -10,6 +10,21 @@ Entries that change a security guarantee are marked **[security]**.
 
 ## [Unreleased]
 
+### Onboarding
+
+- `interpose scan`: finds plaintext credentials in the config files of every common stack (dotenv,
+  .NET, Spring, Rails, Django, WordPress, Docker Compose, Helm, Terraform, Cloudflare, Streamlit,
+  package managers, MCP and agent configs) and keys with a known shape in source code. Values are
+  never printed; exits with status 1 when something is found. Also a pre-commit hook
+  (`interpose-scan`).
+- `interpose import [--apply]`: moves those values into the vault and replaces each one in place
+  with its `secret://` reference, keeping the file's format. Values from about 30 known API providers
+  get a ready-made policy (with the service, a suggestion to approve in the dashboard); values the
+  broker cannot inject yet are reported and left in place.
+- `interpose doctor`: checks vault protection, Windows Hello, agent instructions, `.gitignore` and
+  plaintext credentials in the current folder.
+- `interpose policy templates` and a provider picker in the dashboard's policy dialog.
+
 ### Security
 
 Fixes from the November 2026 adversarial audit; see `docs/en/SECURITY_AUDIT.md`.
