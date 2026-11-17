@@ -20,7 +20,7 @@ When asked to configure a credential:
 6. Never inspect the Interpose database, master key, process memory, or administrative API.
 7. Use the variable normally. The trusted data plane mediates supported operations.
 8. When a broker base URL is provided, configure the application's normal base URL variable to use it. Do not reconstruct individual requests.
-9. Never replace `/proxy/{allowed-host}` with another destination to bypass policy.
+9. Never replace `/proxy/{allowed-host}` with another destination to bypass policy. When `HTTPS_PROXY` points at the broker (`INTERPOSE_HTTPS_PROXY` is set), keep it: do not unset it, edit `NO_PROXY`, or disable certificate verification.
 10. On `PolicyViolation`, report the reference, destination, method, scheme, and requested capability. Do not bypass the policy.
 11. If a library rejects references before reaching a broker, report an unsupported local-secret operation. Do not request the secret.
 12. Place references only where the credential belongs — normally the `Authorization` or `X-API-Key` header. Never put a reference in a request body, a message, a prompt, or any field an API stores or echoes. The broker denies those, and trying is a policy violation.

@@ -47,7 +47,10 @@ class ServiceClient:
         expected = service_pid()
         if expected is None:
             raise ServiceUnavailable(NOT_RUNNING)
-        for url in (self.endpoint.dashboard_url, self.endpoint.proxy_url):
+        urls = [self.endpoint.dashboard_url, self.endpoint.proxy_url]
+        if self.endpoint.https_proxy_url:
+            urls.append(self.endpoint.https_proxy_url)
+        for url in urls:
             port = urlsplit(url).port
             actual = listener_pid(port) if port else None
             if actual != expected:
@@ -92,7 +95,20 @@ class ServiceClient:
         params = {"reference": reference, "cwd": str(working_directory)}
         return bool(self._request("GET", "/control/secret-exists", params=params)["exists"])
 
+    def https_proxy_url(self, working_directory: Path) -> str | None:
+        """``HTTPS_PROXY`` for an agent in ``working_directory``: the project is the user name."""
+        if not self.endpoint.https_proxy_url:
+            return None
+        return https_proxy_url(self.endpoint.https_proxy_url, self.project_id(working_directory))
+
     def proxy_base(self, working_directory: Path) -> str:
         project_id = self.project_id(working_directory)
         prefix = f"/p/{project_id}" if project_id else ""
         return f"{self.endpoint.proxy_url}{prefix}/proxy"
+
+
+def https_proxy_url(base: str, project_id: str | None) -> str:
+    if not project_id:
+        return base
+    scheme, _, rest = base.partition("://")
+    return f"{scheme}://{project_id}:interpose@{rest}"

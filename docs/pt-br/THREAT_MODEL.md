@@ -31,7 +31,8 @@ O modelo preferido é a execução só com referências: processos não confiáv
 | Agente elevado | Não protegido | Um administrador consegue ler tudo. O `interpose run` se recusa a iniciar um agente a partir de um terminal elevado, a menos que `--allow-elevated` seja passado. |
 | Exfiltração direta pela rede | Ainda não protegido | O transporte local explícito não impede um agente de abrir sockets diretos. O controle de saída no sistema operacional continua obrigatório. |
 | Exfiltração pelo broker HTTP | Protegido para destinos aprovados pela política | Políticas de destino, método, esquema, caminho e slot são aplicadas antes da resolução. O destino é analisado de forma estrita (um único hostname ASCII ou IP e uma porta opcional; sem userinfo, caminho, query, fragmento ou Unicode), e a URL que o cliente vai discar é reanalisada e precisa ser igual à aprovada pela política, então `#`, `?`, `@`, separadores codificados ou segmentos `..` não desviam a requisição. Padrões de host são exatos ou com `*.` no primeiro rótulo; globs como `api.*` são recusados. |
-| Tráfego HTTPS | Ainda não protegido | `CONNECT` é rejeitado porque um túnel TLS opaco não permite substituir referências com segurança. |
+| Tráfego HTTPS via `HTTPS_PROXY` | Protegido para hosts que uma política permite | O `interpose run` passa o agente pela porta de proxy do broker. Um host que alguma política permite é sempre terminado com um certificado da CA local do broker e passa pelas mesmas checagens do transporte explícito; as requisições dentro do túnel precisam nomear o host do túnel, e o esquema não pode ser trocado. Os outros hosts passam por um túnel não lido: o agente só tem referências, então nada do que ele envia ali contém credencial. A porta do broker continua rejeitando `CONNECT`. |
+| CA local do broker | Protegido com o serviço; Não protegido no modo de desenvolvimento | A chave da CA fica na pasta do cofre, legível só pela conta do serviço. Certificados só são emitidos para hosts que uma política permite, valem 7 dias e só servem para `serverAuth`; a CA tem `pathLenConstraint = 0`. Ela nunca entra no repositório de confiança do sistema: só a sessão do agente confia nela, por variáveis de ambiente e um `curlrc` da sessão. No modo de desenvolvimento a chave fica no perfil do usuário, então um processo do mesmo usuário poderia emitir certificados — aceitos só por sessões que já rodam como esse usuário. |
 | Redirecionamentos HTTP | Protegido | Redirecionamentos automáticos do destino estão desativados. |
 | Referências URL-encoded | Protegido em query/formulário HTTP | O broker decodifica as referências, avalia a política, resolve e recodifica os valores com segurança. |
 | Adivinhação por fingerprint | Protegido | Os fingerprints são HMAC-SHA256 com uma chave derivada da chave mestra, então um fingerprint listado não serve de oráculo offline para segredos de baixa entropia. Fingerprints SHA-256 antigos são reescritos ao abrir. |
@@ -41,7 +42,7 @@ O modelo preferido é a execução só com referências: processos não confiáv
 | Stack traces | Parcialmente protegido | Os erros do broker são mascarados. Stack traces de aplicações não confiáveis contêm só referências em sessões gerenciadas. |
 | Reflexo na resposta | Parcialmente protegido | Valores resolvidos conhecidos são mascarados sem diferenciar maiúsculas em headers e corpos: como enviados e aparados, percent-encoded, escapados em JSON, hex e base64 (puro, URL-safe e embutido em qualquer alinhamento, como no Basic auth). O broker só oferece `gzip`/`deflate` ao destino e recusa qualquer outro `Content-Encoding`, então o mascaramento nunca analisa um corpo comprimido. Um host permitido que transforme o valor de propósito (cifrar, dividir, recodificar em outro charset) ainda pode devolvê-lo; slots de injeção e `paths` restritos limitam isso a hosts em que o operador já confia com o segredo. |
 | Exfiltração por DNS | Ainda não protegido | O DNS não é controlado no nível do sistema operacional. |
-| Certificate pinning | Ainda não protegido | A futura terminação TLS transparente não vai funcionar para clientes com pinning sem integração explícita. |
+| Certificate pinning | Ainda não protegido | Clientes que fixam certificados ou ignoram variáveis de proxy não passam pelo broker; sem credencial, as chamadas deles falham em vez de vazar. |
 | Uso criptográfico local | Futuro | Assinatura, mTLS, SSH e SigV4 exigem brokers de operação; devolver material de chave é proibido. |
 
 ## Garantias
@@ -54,7 +55,7 @@ A implementação atual garante que:
 4. o launcher não repassa `INTERPOSE_MASTER_KEY` nem `INTERPOSE_HOME` aos filhos;
 5. o armazenamento local de segredos usa criptografia autenticada;
 6. os registros de auditoria não gravam intencionalmente segredos em texto puro;
-7. HTTP `CONNECT` é rejeitado em vez de criar uma falsa garantia de HTTPS transparente;
+7. `CONNECT` para um host que alguma política permite nunca vira um túnel não lido: ele é terminado e passa pela política como qualquer outra requisição, ou é recusado; a porta do broker rejeita `CONNECT` por completo;
 8. o transporte local explícito extrai o destino de `/proxy/{host}` e usa HTTPS por padrão para tráfego externo;
 9. os listeners do loopback recusam requisições vindas de navegador e de DNS rebinding, e a API administrativa exige um token;
 10. com o serviço do Windows instalado, o vault e a chave mestra só podem ser lidos por `NT SERVICE\Interpose`, SYSTEM e administradores, e o serviço só carrega código de `%ProgramFiles%\Interpose`.

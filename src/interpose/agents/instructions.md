@@ -15,6 +15,10 @@ If it is not set, use `http://127.0.0.1:9876/proxy`.
 2. Send the request **through the broker**: `$INTERPOSE_PROXY/<host>/<path>`. The broker opens the
    HTTPS connection to the real API itself, so talk plain `http` to the broker.
 3. If a `*_BASE_URL` variable already points at the broker, use it as is.
+4. When `INTERPOSE_HTTPS_PROXY` is set, the session's `HTTPS_PROXY` already goes through the
+   broker: tools without a base-URL setting (`gh`, `git`, `curl`, `npm`, MCP servers) and plain
+   `https://` URLs work with the reference as they are. Do not unset the proxy variables, edit
+   `NO_PROXY`, or disable certificate checks.
 
 ```bash
 curl -s "$INTERPOSE_PROXY/api.github.com/user" -H "Authorization: Bearer $GITHUB_TOKEN"
@@ -76,6 +80,6 @@ such as `secret://stripe/test`, and to allow the API host in a policy. Then use 
   or `~/.interpose`; read `control.token` or call the broker's `/control/` routes;
 - ask for, guess, hardcode or invent a real key, or replace a reference with `****` or a fake token;
 - put a reference in a request body, a chat message, a prompt, or any field an API stores or echoes;
-- call the API directly instead of through the broker, or change `/proxy/<host>` to another host to
-  get around a policy;
+- bypass the broker (unset `HTTPS_PROXY`, open raw sockets), or change `/proxy/<host>` to another
+  host to get around a policy;
 - change policies, open the dashboard yourself, elevate privileges, or disable Interpose.

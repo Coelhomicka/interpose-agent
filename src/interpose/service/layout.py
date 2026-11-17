@@ -9,6 +9,7 @@ from pathlib import Path
 
 DEFAULT_PROXY_PORT = 9876
 DEFAULT_DASHBOARD_PORT = 18888
+DEFAULT_HTTPS_PROXY_PORT = 9877
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,16 @@ class ServiceLayout:
         return self.client_dir / "installed.json"
 
     @property
+    def tls_dir(self) -> Path:
+        """The broker CA's private key; inside the vault, closed to the user."""
+        return self.vault_dir / "tls"
+
+    @property
+    def ca_certificate_file(self) -> Path:
+        """The broker CA's certificate (public), for agents' trust settings."""
+        return self.client_dir / "ca.pem"
+
+    @property
     def log_file(self) -> Path:
         return self.vault_dir / "service.log"
 
@@ -82,14 +93,26 @@ class ServiceEndpoint:
     proxy_url: str
     dashboard_url: str
     pid: int
+    https_proxy_url: str | None = None
 
     def to_json(self) -> str:
-        return json.dumps({"proxy_url": self.proxy_url, "dashboard_url": self.dashboard_url, "pid": self.pid})
+        return json.dumps({
+            "proxy_url": self.proxy_url,
+            "dashboard_url": self.dashboard_url,
+            "pid": self.pid,
+            "https_proxy_url": self.https_proxy_url,
+        })
 
     @classmethod
     def from_json(cls, text: str) -> ServiceEndpoint:
         data = json.loads(text)
-        return cls(proxy_url=str(data["proxy_url"]), dashboard_url=str(data["dashboard_url"]), pid=int(data["pid"]))
+        https_proxy_url = data.get("https_proxy_url")
+        return cls(
+            proxy_url=str(data["proxy_url"]),
+            dashboard_url=str(data["dashboard_url"]),
+            pid=int(data["pid"]),
+            https_proxy_url=str(https_proxy_url) if https_proxy_url else None,
+        )
 
 
 def service_installed(layout: ServiceLayout | None = None) -> bool:

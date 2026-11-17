@@ -21,7 +21,7 @@
 - vínculos de ambiente públicos e de credencial separados
 - substituição em query e formulário URL-encoded
 - substituição em JSON, headers e corpo
-- rejeição explícita de HTTPS `CONNECT`, que não é suportado
+- modo `HTTPS_PROXY`: TLS terminado por uma CA local confiável só para a sessão, para hosts que uma política permite
 - modo de compatibilidade limitado `interpose-exec`
 - slots de injeção, lista de caminhos permitidos e `allow_exec` explícito nas políticas
 - escopos de projeto e global para segredos e políticas

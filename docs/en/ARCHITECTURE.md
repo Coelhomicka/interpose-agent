@@ -65,7 +65,7 @@ What each zone may do:
 | Zone | Holds | Can | Cannot |
 | --- | --- | --- | --- |
 | Your account (agent, app, CLI, browser) | `secret://` references, the proxy URL, the control token | Send requests through the broker; open a dashboard session | Read the vault or the key; change the code the service runs; read a value back from any endpoint |
-| Service (`NT SERVICE\Interpose`) | The decrypted key, only while a request is in flight | Decrypt, inject into an allowed slot, redact, audit | Bind to anything but loopback; follow redirects; tunnel `CONNECT` |
+| Service (`NT SERVICE\Interpose`) | The decrypted key, only while a request is in flight | Decrypt, inject into an allowed slot, redact, audit | Bind to anything but loopback; follow redirects; tunnel `CONNECT` to a host a policy allows |
 | Administrators / SYSTEM | Everything | Everything | — an elevated agent defeats every boundary here |
 
 ## Deployment modes
@@ -225,8 +225,12 @@ The broker's path for a single request, in order — the order *is* the security
 
 0. **Reject browser and rebound requests.** An `Origin` header, a cross-site `Sec-Fetch-Site`, or —
    on the local transport — a non-loopback `Host` returns `403`.
-1. **Reject `CONNECT`.** Returns `501`. An opaque TLS tunnel cannot be inspected, so policy cannot
-   be enforced on it and no guarantee is claimed.
+1. **Reject `CONNECT` on the broker port.** Returns `501`. `CONNECT` is served only by the
+   `HTTPS_PROXY` front on its own port (`proxy/tunnel.py`). There, a host that some policy allows is
+   always opened with a certificate from the broker's local CA, and each request inside is handed to
+   this same pipeline as an absolute `https://` target, with its `Host` required to equal the
+   tunnel's; any other host gets an unread byte tunnel, since no credential can be injected there.
+   The project comes from the proxy user name.
 2. **Select the scope.** A `/p/{project}/` prefix selects that registered project's scope (then
    global) for this request; an unknown project returns `404`. Without the prefix the broker uses
    its own scope — the folder `interpose up` started in, or global only under the service.
@@ -318,8 +322,11 @@ create or remember anything; the one-time UAC prompt is the only administrator i
 let an agent run code inside the service. Copying them under Program Files costs disk space and
 buys an enforcement boundary.
 
-**`CONNECT` fails loudly.** Silently tunneling would produce working software with a false security
-claim. A `501` is a worse user experience and an honest one.
+**A tunnel is never opaque where a credential could apply.** On the broker port `CONNECT` returns
+`501`. On the `HTTPS_PROXY` port, a host some policy allows is always terminated and read, so
+policy and substitution run exactly as on the explicit transport. Only hosts no policy names are
+tunneled unread: a reference sent there stays a reference. The local CA that makes this possible is
+trusted only by the agent's session, never by the operating system.
 
 **Redaction is a safety net, not a defense.** The engine strips known resolved values and their
 common encodings from responses. A value that is transformed further — hashed, split across a

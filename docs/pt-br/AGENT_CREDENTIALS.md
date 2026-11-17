@@ -24,7 +24,7 @@ Quando for pedido para configurar uma credencial:
 6. Nunca inspecione o banco do Interpose, a chave mestra, a memória de processos ou a API administrativa.
 7. Use a variável normalmente. O plano de dados confiável intermedeia as operações suportadas.
 8. Quando uma URL base do broker for fornecida, configure a variável normal de URL base da aplicação para usá-la. Não reconstrua requisições individuais.
-9. Nunca troque `/proxy/{host-permitido}` por outro destino para contornar a política.
+9. Nunca troque `/proxy/{host-permitido}` por outro destino para contornar a política. Quando o `HTTPS_PROXY` aponta para o broker (`INTERPOSE_HTTPS_PROXY` está definido), mantenha-o: não o remova, não edite o `NO_PROXY` e não desligue a verificação de certificados.
 10. Em caso de `PolicyViolation`, informe a referência, o destino, o método, o esquema e a capacidade pedida. Não contorne a política.
 11. Se uma biblioteca rejeitar referências antes de chegar a um broker, informe que é uma operação com segredo local não suportada. Não peça o segredo.
 12. Coloque referências só onde a credencial pertence — normalmente no header `Authorization` ou `X-API-Key`. Nunca coloque uma referência no corpo de uma requisição, numa mensagem, num prompt ou em qualquer campo que uma API armazene ou ecoe. O broker nega esses casos, e tentar é uma violação de política.

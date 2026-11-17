@@ -346,10 +346,16 @@ interpose run --profile session.yaml -- code .
 > environment — so nothing is protected, and nothing warns you. Close every window first, or use a
 > separate profile directory for the managed session.
 
-**2. It lets you point the credential at a different base URL.** The broker only sees requests
-addressed to it. A tool that reads `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, or an equivalent
-setting can be redirected. A tool that stores its key in the editor's own secret storage and calls
-the vendor endpoint directly cannot — there is nowhere to put a reference and nothing to redirect.
+**2. Its requests reach the broker.** Either way works:
+
+- **A base-URL setting** (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, a custom-endpoint field). The
+  tool talks plain HTTP to `$INTERPOSE_PROXY/<host>/...` and the broker opens the HTTPS connection.
+  This is the simplest path and needs no certificate.
+- **`HTTPS_PROXY`**, which `gh`, `git`, `curl`, `npm`, Python, Go and most MCP servers honor.
+  `interpose run` sets it; see [Tools without a base-URL setting](#tools-without-a-base-url-setting-https_proxy).
+
+A tool that stores its key in the editor's own secret storage and calls the vendor endpoint itself,
+ignoring both, cannot be wrapped: there is nowhere to put a reference.
 
 If a tool has a custom-endpoint setting in its UI, point that setting at the broker and put the
 `secret://` reference in its key field. That works even when the tool is not launched by Interpose,
@@ -357,6 +363,36 @@ as long as the broker is running.
 
 Verify a session with `interpose env validate` and by watching the audit log: if requests are not
 appearing there, the tool is reaching the network on its own.
+
+### Tools without a base-URL setting: `HTTPS_PROXY`
+
+`interpose run` points the agent's process tree at a second broker port (`9877`) through
+`HTTPS_PROXY`, so a command like this works unchanged:
+
+```bash
+GH_TOKEN=secret://github/token gh api /user        # the agent never has the token
+curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user
+```
+
+- **Hosts that some policy allows** are opened by the broker: it answers the TLS with a
+  certificate from its own local CA, reads the request, and runs exactly the same checks as the
+  explicit transport (host, method, path, injection slot, then substitution, redaction and audit).
+  Requests inside the tunnel must name the tunnel's host.
+- **Every other host** gets a plain tunnel the broker does not read. No credential can be injected
+  there, so the agent sends what it already had: references at most. The broker is not an egress
+  firewall; OS-level egress control is still the way to stop direct connections.
+- **The CA is trusted only by the agent's session.** The key stays in the vault folder (closed to
+  your processes with the service). Nothing is added to the Windows certificate store; `run` sets
+  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, Git's CA and
+  backend, and a session `curlrc` (Schannel builds of curl read only that). Browsers and other
+  programs never trust it.
+- The project is the proxy user name (`http://my-app:interpose@127.0.0.1:9877`).
+
+Checked with Python (`httpx`, `requests`), `git`, `gh`, Windows' `curl.exe` and Git's `curl`.
+Node honors `HTTPS_PROXY` in `fetch` from 22.21 / 24.5 (`NODE_USE_ENV_PROXY`, which `run` sets);
+older Node versions go direct and fail without a credential, as before. Tools that pin
+certificates or ignore proxy variables are not covered. Responses are buffered, not streamed, and
+the upstream timeout is 30 seconds. `interpose run --no-https-proxy` turns the mode off.
 
 ## Verifying without resolving
 
@@ -406,13 +442,16 @@ contract as a reference document.
 | External TLS origination (broker opens its own HTTPS connection) | Implemented |
 | Scheme-aware policy (insecure external HTTP denied by default) | Implemented |
 | Query, form, JSON body, and header substitution | Implemented |
-| HTTP forward proxy via `HTTP_PROXY` | Compatibility only |
-| HTTPS `CONNECT` | **Deliberately rejected** |
-| Transparent HTTPS interception | Not implemented — needs a session CA and pinning handling |
+| `HTTPS_PROXY` on port `9877`: TLS opened by the broker for hosts a policy allows | Implemented — set by `interpose run` |
+| `HTTPS_PROXY` to hosts no policy allows | Unread tunnel: no credential can apply there |
+| `HTTP_PROXY` (absolute-form `http://`) | Implemented on port `9877` |
+| HTTPS `CONNECT` on the broker port `9876` | **Rejected** with `501` |
+| Certificate-pinned clients, streaming responses, WebSocket | Not implemented |
 | Database auth, SSH, mTLS, SigV4 signing | Not implemented — needs protocol-level brokers |
 
-`CONNECT` returns `501` rather than silently tunneling. A broker that cannot see the request cannot
-enforce policy on it, and pretending otherwise would be a false guarantee.
+The broker never tunnels a connection to a host where it could inject a credential: those it opens
+and reads, or refuses. A tunnel it cannot read would be a place where policy silently stops
+applying.
 
 ## Project status
 

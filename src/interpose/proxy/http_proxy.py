@@ -235,7 +235,8 @@ def _located_references(
     return found
 
 
-def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
+def create_proxy_app(container: RuntimeContainer | None = None, *, upstream_verify: Any = True) -> FastAPI:
+    """The broker. ``upstream_verify`` is passed to httpx (tests use a private CA)."""
     runtime = container or create_container()
     app = FastAPI(title="Interpose Proxy", version="0.1.0")
 
@@ -261,8 +262,12 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
         policy_engine = runtime.policy_engine
         secret_store = runtime.secret_store
         project_match = _PROJECT_PREFIX_RE.match(path)
+        # The HTTPS_PROXY front puts the project (from the proxy user name) here;
+        # scope keys cannot be set by anything that reaches the broker over HTTP.
+        project_id = request.scope.get("interpose.project")
         if project_match:
             project_id, path = project_match.group(1), project_match.group(2)
+        if project_id:
             if runtime.project_registry.get(project_id) is None:
                 return Response(content=f"unknown project: {project_id}", status_code=404)
             project_context = ScopeContext(project_id=project_id)
@@ -402,7 +407,9 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
             return Response(content="SecretNotFound", status_code=404)
 
         try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(
+                timeout=30.0, follow_redirects=False, trust_env=False, verify=upstream_verify
+            ) as client:
                 upstream_response = await client.request(
                     request.method,
                     upstream_url,
@@ -448,6 +455,7 @@ def create_proxy_app(container: RuntimeContainer | None = None) -> FastAPI:
                 "upstream_url": f"{target.scheme}://{target.host}{target.path}",
                 "query_parameter_count": len(query_pairs),
                 "text_mode": text_mode,
+                "transport": request.scope.get("interpose.transport", "broker"),
             },
         )
         return Response(

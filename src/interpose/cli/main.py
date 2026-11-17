@@ -21,7 +21,7 @@ from ..core.references import SecretReferenceError, normalize_secret_reference
 from ..executor.trusted_executor import ExecutionPreparationError, PolicyViolationError
 from ..proxy.http_proxy import create_proxy_app
 from ..secrets.base import SecretNotFound, SecretValueError
-from ..service.layout import DEFAULT_PROXY_PORT, ServiceLayout, service_installed
+from ..service.layout import DEFAULT_HTTPS_PROXY_PORT, DEFAULT_PROXY_PORT, ServiceLayout, service_installed
 from ..session.dotenv import DotenvValidationError, validate_dotenv
 from ..session.isolation.base import IsolationError
 from ..session.isolation.factory import create_isolation_backend
@@ -95,8 +95,23 @@ class _ServiceReferences:
         return self._client.secret_exists(reference, self._working_directory)
 
 
-def _session_launcher(cwd: Path | None) -> SessionLauncher:
+def _https_proxy_settings(url: str | None, ca_certificate: Path, runtime_home: Path):
+    """Settings for transparent mode, or None when the broker has no CA yet."""
+    from ..proxy.tls_authority import write_trust_bundle
+    from ..session.launcher import HttpsProxySettings, write_curl_config
+
+    if url is None or not ca_certificate.is_file():
+        return None
+    bundle = write_trust_bundle(ca_certificate.read_bytes(), runtime_home / "agent-trust.pem")
+    curl_home = write_curl_config(runtime_home / "agent-curl", bundle)
+    return HttpsProxySettings(url=url, ca_certificate=ca_certificate, trust_bundle=bundle, curl_home=curl_home)
+
+
+def _session_launcher(cwd: Path | None, *, https_proxy: bool = True) -> SessionLauncher:
+    from ..service.client import https_proxy_url
+
     working_directory = (cwd or Path.cwd()).resolve()
+    runtime_home = Path.home() / ".interpose"
     if service_installed():
         from ..service.client import ServiceClient, ServiceUnavailable
 
@@ -104,14 +119,16 @@ def _session_launcher(cwd: Path | None) -> SessionLauncher:
             client = ServiceClient.connect()
             client.verify_identity()
             proxy_base = client.proxy_base(working_directory)
+            tunnel_url = client.https_proxy_url(working_directory) if https_proxy else None
         except ServiceUnavailable as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from exc
         return SessionLauncher(
             secret_store=_ServiceReferences(client, working_directory),
             audit_logger=None,
-            runtime_home=Path.home() / ".interpose",
+            runtime_home=runtime_home,
             proxy_base=proxy_base,
+            https_proxy=_https_proxy_settings(tunnel_url, ServiceLayout.default().ca_certificate_file, runtime_home),
         )
     container = create_container(project_root=working_directory)
     project = container.project
@@ -119,6 +136,12 @@ def _session_launcher(cwd: Path | None) -> SessionLauncher:
     prefix = f"/p/{project.id}" if project else ""
     launcher = container.session_launcher
     launcher.proxy_base = f"http://127.0.0.1:{port}{prefix}/proxy"
+    if https_proxy:
+        tunnel_port = os.environ.get("INTERPOSE_HTTPS_PROXY_PORT", str(DEFAULT_HTTPS_PROXY_PORT))
+        tunnel_url = https_proxy_url(f"http://127.0.0.1:{tunnel_port}", project.id if project else None)
+        launcher.https_proxy = _https_proxy_settings(
+            tunnel_url, container.config.paths.home / "tls" / "ca.pem", container.config.paths.home
+        )
     return launcher
 
 
@@ -483,6 +506,11 @@ def run_session(
     allow_elevated: bool = typer.Option(
         False, "--allow-elevated", help="Start the agent even from an administrator shell (not recommended)."
     ),
+    https_proxy: bool = typer.Option(
+        True, "--https-proxy/--no-https-proxy",
+        help="Route the agent's HTTP(S) through the broker (HTTPS_PROXY), so tools without a base-URL "
+             "setting (gh, git, curl, npm, MCP servers) get credentials too.",
+    ),
 ) -> None:
     from ..core.elevation import is_elevated
 
@@ -505,7 +533,7 @@ def run_session(
         )
     try:
         session_profile = SessionProfile.from_path(profile)
-        return_code = _session_launcher(cwd).run(
+        return_code = _session_launcher(cwd, https_proxy=https_proxy).run(
             list(ctx.args),
             profile=session_profile,
             agent=agent,
@@ -562,11 +590,16 @@ def up(
     project_dir: Path = typer.Option(Path("."), "--project-dir", exists=True, file_okay=False,
                                      help="Folder whose project scope is active."),
     proxy_port: int = typer.Option(9876, help="Broker port agents connect to."),
+    https_proxy_port: int = typer.Option(
+        DEFAULT_HTTPS_PROXY_PORT, help="HTTPS_PROXY port for tools without a base-URL setting."
+    ),
     dashboard_port: int = typer.Option(18888, help="Dashboard port; a free one is chosen if taken."),
     open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the dashboard in the browser."),
 ) -> None:
     """Start the broker and the configuration dashboard together, like `aspire run`."""
     from ..dashboard.app import DashboardAuth, DashboardContext, create_dashboard_app
+    from ..proxy.tls_authority import CertificateAuthority
+    from ..proxy.tunnel import TunnelServer, policy_host_checker
 
     working_directory = project_dir.resolve()
     if service_installed():
@@ -575,6 +608,9 @@ def up(
     container = create_container(project_root=working_directory)
     if not _port_is_free(proxy_port):
         typer.echo(f"Port {proxy_port} is in use; pass --proxy-port to choose another.", err=True)
+        raise typer.Exit(code=1)
+    if not _port_is_free(https_proxy_port):
+        typer.echo(f"Port {https_proxy_port} is in use; pass --https-proxy-port to choose another.", err=True)
         raise typer.Exit(code=1)
     if not _port_is_free(dashboard_port):
         dashboard_port = _free_port()
@@ -591,6 +627,7 @@ def up(
         ("Project",
          f"{project.name} ({project.root})" if project else f"none - global scope only ({working_directory})"),
         ("Proxy", proxy_url),
+        ("HTTPS proxy", f"http://127.0.0.1:{https_proxy_port}"),
         ("Dashboard", login_url),
     ])
     typer.echo("               single-use login link; restart for a new one")
@@ -604,20 +641,30 @@ def up(
         typer.echo("")
     typer.echo("  Press Ctrl+C to stop.", err=True)
 
+    proxy_app = create_proxy_app(container)
+    tunnel = TunnelServer(
+        proxy_app,
+        CertificateAuthority(container.config.paths.home / "tls"),
+        intercepts=policy_host_checker(container.policy_repository),
+        known_project=lambda project: container.project_registry.get(project) is not None,
+    )
     servers = [
-        uvicorn.Server(uvicorn.Config(create_proxy_app(container), host="127.0.0.1", port=proxy_port,
-                                      log_level="warning")),
+        uvicorn.Server(uvicorn.Config(proxy_app, host="127.0.0.1", port=proxy_port, log_level="warning")),
         uvicorn.Server(uvicorn.Config(dashboard, host="127.0.0.1", port=dashboard_port, log_level="warning")),
     ]
 
     async def serve() -> None:
         async def open_when_ready() -> None:
+            await tunnel.start("127.0.0.1", https_proxy_port)
             while not servers[1].started:
                 await asyncio.sleep(0.05)
             if open_browser:
                 webbrowser.open(login_url)
 
-        await asyncio.gather(*(server.serve() for server in servers), open_when_ready())
+        try:
+            await asyncio.gather(*(server.serve() for server in servers), open_when_ready())
+        finally:
+            await tunnel.close()
 
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(serve())
@@ -814,7 +861,7 @@ def _preflight_install() -> None:
                    err=True)
         raise typer.Exit(code=1)
     service = service_pid()
-    for port in (DEFAULT_PROXY_PORT, 18888):
+    for port in (DEFAULT_PROXY_PORT, DEFAULT_HTTPS_PROXY_PORT, 18888):
         owner = listener_pid(port)
         if owner is not None and owner != service:
             typer.echo(f"Port {port} is in use by process {owner} (an `interpose up` still running?). "
